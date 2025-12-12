@@ -2,6 +2,7 @@ langchain
 langchain-core
 langchain-openai
 langchain-community
+langchain-ollama
 langgraph
 pydantic
 streamlit

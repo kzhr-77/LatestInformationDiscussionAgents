@@ -7,8 +7,17 @@ from src.agents.fact_checker import FactCheckerAgent
 from src.agents.reporter import ReporterAgent
 from src.utils.llm import get_llm
 
-def create_graph():
-    llm = get_llm()
+def create_graph(model_name: str = "gemma3:4b"):
+    """
+    討論システムのグラフを作成する
+    
+    Args:
+        model_name: 使用するLLMモデル名（デフォルト: gemma3:4b）
+    
+    Returns:
+        コンパイル済みのStateGraph
+    """
+    llm = get_llm(model_name)
     
     # Initialize agents
     researcher = ResearcherAgent(llm)

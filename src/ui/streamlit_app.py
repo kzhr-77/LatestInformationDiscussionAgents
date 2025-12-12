@@ -11,20 +11,26 @@ st.set_page_config(page_title="Discussion News Analysis", layout="wide")
 
 st.title("討論型ニュース分析システム")
 
-api_key = st.sidebar.text_input("OpenAI API Key", type="password")
-if api_key:
-    os.environ["OPENAI_API_KEY"] = api_key
+# OpenAI用（コメントアウト）
+# api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+# if api_key:
+#     os.environ["OPENAI_API_KEY"] = api_key
+
+# Ollama用: モデル選択（オプション）
+model_name = st.sidebar.selectbox(
+    "使用するモデル",
+    ["gemma3:4b", "llama3:8b", "mistral:7b"],
+    index=0
+)
 
 topic = st.text_input("分析したいトピックまたはURLを入力してください")
 
 if st.button("分析開始"):
     if not topic:
         st.warning("トピックを入力してください。")
-    elif not api_key and not os.getenv("OPENAI_API_KEY"):
-        st.warning("API Keyを設定してください。")
     else:
         st.info("分析を開始します...")
-        graph = create_graph()
+        graph = create_graph(model_name)
         try:
             initial_state = {"topic": topic, "messages": []}
             result = graph.invoke(initial_state)
