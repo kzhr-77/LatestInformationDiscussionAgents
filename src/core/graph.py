@@ -47,19 +47,9 @@ def create_graph(model_name: str = "gemma3:4b"):
         try:
             if not state.get("article_text"):
                 raise ValueError("記事テキストがありません")
+            # LLMからArgument型を直接取得
             arg = optimist.analyze(state["article_text"])
-            # Mocking structured return for now
-            # TODO: 実際の実装では、LLMからArgument型を直接取得する
-            if isinstance(arg, str):
-                return {"optimistic_argument": Argument(
-                    conclusion=arg,
-                    evidence=[]
-                )}
-            else:
-                return {"optimistic_argument": Argument(
-                    conclusion=arg.get("conclusion", "") if isinstance(arg, dict) else str(arg),
-                    evidence=arg.get("evidence", []) if isinstance(arg, dict) else []
-                )}
+            return {"optimistic_argument": arg}
         except Exception as e:
             print(f"楽観的分析エラー: {e}")
             return {"optimistic_argument": Argument(
@@ -72,19 +62,9 @@ def create_graph(model_name: str = "gemma3:4b"):
         try:
             if not state.get("article_text"):
                 raise ValueError("記事テキストがありません")
+            # LLMからArgument型を直接取得
             arg = pessimist.analyze(state["article_text"])
-            # Mocking structured return for now
-            # TODO: 実際の実装では、LLMからArgument型を直接取得する
-            if isinstance(arg, str):
-                return {"pessimistic_argument": Argument(
-                    conclusion=arg,
-                    evidence=[]
-                )}
-            else:
-                return {"pessimistic_argument": Argument(
-                    conclusion=arg.get("conclusion", "") if isinstance(arg, dict) else str(arg),
-                    evidence=arg.get("evidence", []) if isinstance(arg, dict) else []
-                )}
+            return {"pessimistic_argument": arg}
         except Exception as e:
             print(f"悲観的分析エラー: {e}")
             return {"pessimistic_argument": Argument(
