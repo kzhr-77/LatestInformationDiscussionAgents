@@ -1,5 +1,5 @@
 from typing import TypedDict, List, Optional
-from src.models.schemas import Argument, Critique, FinalReport
+from src.models.schemas import Argument, Critique, FinalReport, Rebuttal
 
 class DiscussionState(TypedDict):
     topic: str
@@ -7,6 +7,8 @@ class DiscussionState(TypedDict):
     optimistic_argument: Optional[Argument]
     pessimistic_argument: Optional[Argument]
     critique: Optional[Critique]
+    optimistic_rebuttal: Optional[Rebuttal]
+    pessimistic_rebuttal: Optional[Rebuttal]
     final_report: Optional[FinalReport]
     messages: List[str] # For history tracking
 

@@ -16,3 +16,20 @@ venv/
 
 # MacOS
 .DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/credentials.json
+
+# Log files
+*.log
+*.log.*
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS files
+Thumbs.db

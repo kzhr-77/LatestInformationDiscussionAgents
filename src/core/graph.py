@@ -6,6 +6,7 @@ from src.agents.analyst_pessimistic import PessimisticAnalystAgent
 from src.agents.fact_checker import FactCheckerAgent
 from src.agents.reporter import ReporterAgent
 from src.utils.llm import get_llm
+from src.models.schemas import Argument, Critique, FinalReport
 
 def create_graph(model_name: str = "gemma3:4b"):
     """
@@ -28,28 +29,135 @@ def create_graph(model_name: str = "gemma3:4b"):
 
     # Define nodes
     def research_node(state: DiscussionState):
-        article = researcher.run(state["topic"])
-        return {"article_text": article}
+        """フェーズ0: 記事取得ノード"""
+        try:
+            if not state.get("topic"):
+                raise ValueError("トピックが指定されていません")
+            article = researcher.run(state["topic"])
+            if not article:
+                raise ValueError("記事の取得に失敗しました")
+            return {"article_text": article}
+        except Exception as e:
+            # エラーをログに記録し、空の記事テキストを返す
+            print(f"リサーチエラー: {e}")
+            return {"article_text": f"エラー: {str(e)}"}
 
     def optimist_node(state: DiscussionState):
-        arg = optimist.analyze(state["article_text"])
-        # Mocking structured return for now
-        return {"optimistic_argument": {"conclusion": arg, "evidence": []}}
+        """フェーズ1: 楽観的分析ノード"""
+        try:
+            if not state.get("article_text"):
+                raise ValueError("記事テキストがありません")
+            arg = optimist.analyze(state["article_text"])
+            # Mocking structured return for now
+            # TODO: 実際の実装では、LLMからArgument型を直接取得する
+            if isinstance(arg, str):
+                return {"optimistic_argument": Argument(
+                    conclusion=arg,
+                    evidence=[]
+                )}
+            else:
+                return {"optimistic_argument": Argument(
+                    conclusion=arg.get("conclusion", "") if isinstance(arg, dict) else str(arg),
+                    evidence=arg.get("evidence", []) if isinstance(arg, dict) else []
+                )}
+        except Exception as e:
+            print(f"楽観的分析エラー: {e}")
+            return {"optimistic_argument": Argument(
+                conclusion=f"エラー: {str(e)}",
+                evidence=[]
+            )}
 
     def pessimist_node(state: DiscussionState):
-        arg = pessimist.analyze(state["article_text"])
-        # Mocking structured return for now
-        return {"pessimistic_argument": {"conclusion": arg, "evidence": []}}
+        """フェーズ1: 悲観的分析ノード"""
+        try:
+            if not state.get("article_text"):
+                raise ValueError("記事テキストがありません")
+            arg = pessimist.analyze(state["article_text"])
+            # Mocking structured return for now
+            # TODO: 実際の実装では、LLMからArgument型を直接取得する
+            if isinstance(arg, str):
+                return {"pessimistic_argument": Argument(
+                    conclusion=arg,
+                    evidence=[]
+                )}
+            else:
+                return {"pessimistic_argument": Argument(
+                    conclusion=arg.get("conclusion", "") if isinstance(arg, dict) else str(arg),
+                    evidence=arg.get("evidence", []) if isinstance(arg, dict) else []
+                )}
+        except Exception as e:
+            print(f"悲観的分析エラー: {e}")
+            return {"pessimistic_argument": Argument(
+                conclusion=f"エラー: {str(e)}",
+                evidence=[]
+            )}
     
     def checker_node(state: DiscussionState):
-        critique = checker.validate([state["optimistic_argument"], state["pessimistic_argument"]])
-        # Mocking return
-        return {"critique": {"bias_points": [], "factual_errors": []}}
+        """フェーズ2: ファクトチェックノード"""
+        try:
+            optimistic_arg = state.get("optimistic_argument")
+            pessimistic_arg = state.get("pessimistic_argument")
+            
+            if not optimistic_arg or not pessimistic_arg:
+                raise ValueError("分析結果が不足しています")
+            
+            critique = checker.validate([optimistic_arg, pessimistic_arg])
+            # Mocking return
+            # TODO: 実際の実装では、LLMからCritique型を直接取得する
+            if isinstance(critique, str):
+                return {"critique": Critique(
+                    bias_points=[],
+                    factual_errors=[]
+                )}
+            else:
+                return {"critique": Critique(
+                    bias_points=critique.get("bias_points", []) if isinstance(critique, dict) else [],
+                    factual_errors=critique.get("factual_errors", []) if isinstance(critique, dict) else []
+                )}
+        except Exception as e:
+            print(f"ファクトチェックエラー: {e}")
+            return {"critique": Critique(
+                bias_points=[],
+                factual_errors=[f"エラー: {str(e)}"]
+            )}
 
     def reporter_node(state: DiscussionState):
-        report = reporter.create_report(state["messages"])
-        # Mocking return
-        return {"final_report": {"final_conclusion": report}}
+        """フェーズ4: レポート生成ノード"""
+        try:
+            report = reporter.create_report(state.get("messages", []))
+            # Mocking return
+            # TODO: 実際の実装では、LLMからFinalReport型を直接取得する
+            # 現在はモックなので、最小限の構造を返す
+            optimistic_arg = state.get("optimistic_argument") or Argument(conclusion="", evidence=[])
+            pessimistic_arg = state.get("pessimistic_argument") or Argument(conclusion="", evidence=[])
+            
+            if isinstance(report, str):
+                return {"final_report": FinalReport(
+                    article_info="",
+                    optimistic_view=optimistic_arg,
+                    pessimistic_view=pessimistic_arg,
+                    critique_points=[],
+                    final_conclusion=report
+                )}
+            else:
+                return {"final_report": FinalReport(
+                    article_info=report.get("article_info", "") if isinstance(report, dict) else "",
+                    optimistic_view=optimistic_arg,
+                    pessimistic_view=pessimistic_arg,
+                    critique_points=report.get("critique_points", []) if isinstance(report, dict) else [],
+                    final_conclusion=report.get("final_conclusion", str(report)) if isinstance(report, dict) else str(report)
+                )}
+        except Exception as e:
+            print(f"レポート生成エラー: {e}")
+            optimistic_arg = state.get("optimistic_argument") or Argument(conclusion="", evidence=[])
+            pessimistic_arg = state.get("pessimistic_argument") or Argument(conclusion="", evidence=[])
+            return {"final_report": FinalReport(
+                article_info="",
+                optimistic_view=optimistic_arg,
+                pessimistic_view=pessimistic_arg,
+                critique_points=[],
+                final_conclusion=f"エラー: {str(e)}"
+            )}
 
     workflow = StateGraph(DiscussionState)
 

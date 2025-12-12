@@ -1,9 +1,9 @@
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 
 class ResearcherAgent:
-    def __init__(self, model: ChatOpenAI):
+    def __init__(self, model: BaseChatModel):
         self.model = model
 
     def run(self, topic: str) -> str:
