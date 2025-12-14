@@ -22,13 +22,14 @@ def check_ollama_connection(base_url: str = "http://localhost:11434") -> bool:
     except Exception:
         return False
 
-def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:11434"):
+def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:11434", temperature: float = 0.7):
     """
     Ollamaを使用してLLMを取得する
     
     Args:
         model_name: 使用するOllamaモデル名（デフォルト: gemma3:4b）
         base_url: OllamaのベースURL（デフォルト: http://localhost:11434）
+        temperature: 温度パラメータ（デフォルト: 0.7）
     
     Returns:
         ChatOllamaインスタンス
@@ -63,7 +64,7 @@ def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:114
     
     return ChatOllama(
         model=model_name,
-        temperature=0.7,
+        temperature=temperature,
         base_url=base_url
     )
     

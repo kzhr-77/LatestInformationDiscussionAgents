@@ -19,12 +19,14 @@ def create_graph(model_name: str = "gemma3:4b"):
         コンパイル済みのStateGraph
     """
     llm = get_llm(model_name)
+    # ファクトチェッカー用は温度を低めに設定（事実検証のため）
+    llm_fact_checker = get_llm(model_name, temperature=0.3)
     
     # Initialize agents
     researcher = ResearcherAgent(llm)
     optimist = OptimisticAnalystAgent(llm)
     pessimist = PessimisticAnalystAgent(llm)
-    checker = FactCheckerAgent(llm)
+    checker = FactCheckerAgent(llm_fact_checker)
     reporter = ReporterAgent(llm)
 
     # Define nodes
@@ -77,23 +79,18 @@ def create_graph(model_name: str = "gemma3:4b"):
         try:
             optimistic_arg = state.get("optimistic_argument")
             pessimistic_arg = state.get("pessimistic_argument")
+            article_text = state.get("article_text", "")
             
             if not optimistic_arg or not pessimistic_arg:
                 raise ValueError("分析結果が不足しています")
             
-            critique = checker.validate([optimistic_arg, pessimistic_arg])
-            # Mocking return
-            # TODO: 実際の実装では、LLMからCritique型を直接取得する
-            if isinstance(critique, str):
-                return {"critique": Critique(
-                    bias_points=[],
-                    factual_errors=[]
-                )}
-            else:
-                return {"critique": Critique(
-                    bias_points=critique.get("bias_points", []) if isinstance(critique, dict) else [],
-                    factual_errors=critique.get("factual_errors", []) if isinstance(critique, dict) else []
-                )}
+            if not article_text:
+                raise ValueError("記事テキストがありません")
+            
+            # LLMからCritique型を直接取得
+            critique = checker.validate(optimistic_arg, pessimistic_arg, article_text)
+            return {"critique": critique}
+            
         except Exception as e:
             print(f"ファクトチェックエラー: {e}")
             return {"critique": Critique(
