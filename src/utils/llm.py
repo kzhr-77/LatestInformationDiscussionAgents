@@ -5,6 +5,30 @@
 # Ollama用
 from langchain_ollama import ChatOllama
 import requests
+import json
+
+def _fetch_ollama_tags(base_url: str = "http://localhost:11434") -> dict:
+    """
+    Ollamaの /api/tags を取得する（モデル一覧取得）。
+
+    Raises:
+        ConnectionError: 接続不可/HTTPエラー
+        ValueError: JSONとして解釈できない
+    """
+    try:
+        response = requests.get(f"{base_url}/api/tags", timeout=5)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(
+            "Ollamaサービスに接続できません。Ollamaが起動していることを確認してください。\n"
+            "💡 対処方法: `ollama serve` を実行するか、Ollamaアプリを起動してください。\n"
+            f"詳細: {e}"
+        )
+
+    try:
+        return response.json()
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Ollama APIの応答がJSONではありません: {e}")
 
 def check_ollama_connection(base_url: str = "http://localhost:11434") -> bool:
     """
@@ -17,8 +41,8 @@ def check_ollama_connection(base_url: str = "http://localhost:11434") -> bool:
         接続可能な場合True
     """
     try:
-        response = requests.get(f"{base_url}/api/tags", timeout=5)
-        return response.status_code == 200
+        _fetch_ollama_tags(base_url)
+        return True
     except Exception:
         return False
 
@@ -38,29 +62,15 @@ def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:114
         ConnectionError: Ollamaサービスに接続できない場合
         ValueError: モデルが存在しない場合
     """
-    # 接続確認
-    if not check_ollama_connection(base_url):
-        raise ConnectionError(
-            f"Ollamaサービスに接続できません。\n"
-            f"以下の点を確認してください:\n"
-            f"1. Ollamaが起動しているか: `ollama serve` または Ollamaアプリが起動しているか\n"
-            f"2. URLが正しいか: {base_url}\n"
-            f"3. ファイアウォールがブロックしていないか"
+    # /api/tags を1回だけ取得して、接続確認とモデル存在確認をまとめて行う
+    tags = _fetch_ollama_tags(base_url)
+    models = [m.get("name") for m in tags.get("models", []) if isinstance(m, dict) and m.get("name")]
+    if model_name not in models:
+        raise ValueError(
+            f"モデル '{model_name}' が見つかりません。\n"
+            f"利用可能なモデル: {', '.join(models) if models else 'なし'}\n"
+            f"モデルをダウンロードするには: `ollama pull {model_name}`"
         )
-    
-    # モデルの存在確認
-    try:
-        response = requests.get(f"{base_url}/api/tags", timeout=5)
-        if response.status_code == 200:
-            models = [model["name"] for model in response.json().get("models", [])]
-            if model_name not in models:
-                raise ValueError(
-                    f"モデル '{model_name}' が見つかりません。\n"
-                    f"利用可能なモデル: {', '.join(models)}\n"
-                    f"モデルをダウンロードするには: `ollama pull {model_name}`"
-                )
-    except requests.exceptions.RequestException as e:
-        raise ConnectionError(f"Ollama APIへの接続に失敗しました: {e}")
     
     return ChatOllama(
         model=model_name,

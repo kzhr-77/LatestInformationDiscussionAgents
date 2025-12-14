@@ -1,6 +1,8 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models import BaseChatModel
 from src.models.schemas import Argument, Critique
+import json
+import re
 
 class FactCheckerAgent:
     """
@@ -85,7 +87,8 @@ class FactCheckerAgent:
             
             # LLMを呼び出して構造化出力を取得
             result = chain.invoke({
-                "article_text": article_text[:5000],  # 長すぎる場合は切り詰め
+                # 長文は先頭+末尾を残して文脈を保持（単純先頭切り捨てより誤判定が減る）
+                "article_text": self._truncate_article_text(article_text),
                 "optimistic_conclusion": optimistic_argument.conclusion,
                 "optimistic_evidence": optimistic_evidence_str if optimistic_evidence_str else "（証拠なし）",
                 "pessimistic_conclusion": pessimistic_argument.conclusion,
@@ -95,10 +98,75 @@ class FactCheckerAgent:
             return result
             
         except Exception as e:
-            # エラーが発生した場合、フォールバックとしてモックデータを返す
-            print(f"ファクトチェックエラー: {e}")
+            # 構造化出力が崩れた場合は、JSON出力を強制して復旧を試みる
+            print(f"ファクトチェックエラー（structured_output）: {e}")
+            return self._fallback_validate_as_json(
+                optimistic_argument=optimistic_argument,
+                pessimistic_argument=pessimistic_argument,
+                article_text=article_text,
+                original_error=e,
+            )
+
+    def _truncate_article_text(self, article_text: str, max_chars: int = 8000) -> str:
+        """
+        記事テキストが長い場合に、先頭+末尾を残して短縮する。
+        """
+        text = (article_text or "").strip()
+        if len(text) <= max_chars:
+            return text
+        head = text[: max_chars // 2]
+        tail = text[-(max_chars // 2) :]
+        return head + "\n\n...(中略)...\n\n" + tail
+
+    def _fallback_validate_as_json(
+        self,
+        optimistic_argument: Argument,
+        pessimistic_argument: Argument,
+        article_text: str,
+        original_error: Exception,
+    ) -> Critique:
+        """
+        structured_outputが失敗した場合のフォールバック。
+        LLMにJSON文字列で出させて、Pydantic(Critique)へ復元する。
+        """
+        try:
+            optimistic_evidence_str = "\n".join([f"- {ev}" for ev in optimistic_argument.evidence])
+            pessimistic_evidence_str = "\n".join([f"- {ev}" for ev in pessimistic_argument.evidence])
+
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", "あなたは客観的なファクトチェッカーです。必ずJSONのみを出力してください。"),
+                ("human", """以下を検証し、次のJSONのみを返してください。\n\nJSONスキーマ:\n{\n  \"bias_points\": [\"...\"] ,\n  \"factual_errors\": [\"...\"]\n}\n\n元の記事:\n{article_text}\n\n楽観的アナリスト:\n結論: {optimistic_conclusion}\n証拠:\n{optimistic_evidence}\n\n悲観的アナリスト:\n結論: {pessimistic_conclusion}\n証拠:\n{pessimistic_evidence}\n""")
+            ])
+            raw = (prompt | self.model).invoke({
+                "article_text": self._truncate_article_text(article_text),
+                "optimistic_conclusion": optimistic_argument.conclusion,
+                "optimistic_evidence": optimistic_evidence_str if optimistic_evidence_str else "（証拠なし）",
+                "pessimistic_conclusion": pessimistic_argument.conclusion,
+                "pessimistic_evidence": pessimistic_evidence_str if pessimistic_evidence_str else "（証拠なし）",
+            })
+
+            # rawはMessage型になることがあるのでcontentを取り出す
+            content = getattr(raw, "content", raw)
+            if not isinstance(content, str):
+                content = str(content)
+
+            # JSON部分を抽出（前後に余計な文が付く場合に備える）
+            match = re.search(r"\{[\s\S]*\}", content)
+            json_text = match.group(0) if match else content
+            data = json.loads(json_text)
+
+            if hasattr(Critique, "model_validate"):
+                return Critique.model_validate(data)  # pydantic v2
+            return Critique.parse_obj(data)  # pydantic v1
+
+        except Exception as e:
+            print(f"ファクトチェックフォールバックエラー: {e}")
             return Critique(
-                bias_points=[f"検証中にエラーが発生しました: {str(e)}"],
-                factual_errors=[]
+                bias_points=[
+                    "検証に失敗しました（出力の構造化に失敗）。",
+                    f"structured_outputエラー: {str(original_error)}",
+                    f"fallbackエラー: {str(e)}",
+                ],
+                factual_errors=[],
             )
 

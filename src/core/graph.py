@@ -149,8 +149,8 @@ def create_graph(model_name: str = "gemma3:4b"):
     workflow.set_entry_point("researcher")
     workflow.add_edge("researcher", "optimist")
     workflow.add_edge("researcher", "pessimist")
-    workflow.add_edge("optimist", "checker")
-    workflow.add_edge("pessimist", "checker")
+    # AND合流: 楽観・悲観の両方が完了してからcheckerを1回だけ実行する
+    workflow.add_edge(["optimist", "pessimist"], "checker")
     workflow.add_edge("checker", "reporter")
     workflow.add_edge("reporter", END)
 
