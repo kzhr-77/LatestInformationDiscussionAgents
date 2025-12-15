@@ -117,15 +117,49 @@ class FactCheckerAgent:
         """
         CritiqueをUI表示向けに正規化する。
         - factual_errors の各項目を200文字以内に丸める
+        - 重複項目を除去する（LLMが同じ文を複数回出すケースの対策）
         """
         try:
             bias_points = list(getattr(critique, "bias_points", []) or [])
             factual_errors = list(getattr(critique, "factual_errors", []) or [])
+
+            bias_points = self._dedupe_points(bias_points)
             factual_errors = [self._truncate_text(x, 200) for x in factual_errors]
+            factual_errors = self._dedupe_points(factual_errors)
+
             return Critique(bias_points=bias_points, factual_errors=factual_errors)
         except Exception:
             # 失敗時は元のまま返す
             return critique
+
+    @staticmethod
+    def _dedupe_points(points: list[str]) -> list[str]:
+        """
+        表示用の重複除去。
+        - 前後空白/連続空白を正規化
+        - 「楽観的アナリスト:」「悲観的アナリスト:」「両アナリスト:」などのラベル差は比較時に無視
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+
+        for p in points or []:
+            raw = "" if p is None else str(p)
+            raw = raw.strip()
+            if not raw:
+                continue
+
+            key = raw
+            # ラベル（比較時のみ除外）
+            key = re.sub(r"^(楽観的アナリスト|悲観的アナリスト|両アナリスト)\s*[:：]\s*", "", key)
+            # 空白正規化
+            key = re.sub(r"\s+", " ", key).strip()
+
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(raw)
+
+        return out
 
     @staticmethod
     def _truncate_text(text: str, max_chars: int) -> str:
