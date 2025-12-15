@@ -1,0 +1,9 @@
+# RSS/Atom フィード許可リスト（サンプル）
+# - 1行に1URL
+# - 「#」で始まる行はコメント
+# - 運用方針: 公式/信頼できるソースに限定する
+#
+# 例）NHK NEWS WEB
+https://www3.nhk.or.jp/rss/news/cat0.xml
+
+

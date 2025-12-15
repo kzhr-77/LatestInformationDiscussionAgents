@@ -32,6 +32,11 @@ class FactCheckerAgent:
 3. **バイアスの特定**: 各アナリストが特定の視点に偏っていないか
 4. **事実の確認**: 数値やデータが正確に引用されているか
 
+重要ルール:
+- 同じ文言/同じ意味の指摘を繰り返さない（言い換えも含む）
+- 各項目は互いに重複しないようにする
+- factual_errors の各項目は200文字以内にする
+
 出力は以下の形式で構造化してください：
 - bias_points: 各アナリストの主張における偏りやバイアスを指摘（楽観的アナリストと悲観的アナリストを分けて記述、各2-3個）
 - factual_errors: 事実の誤りや文脈からの逸脱を指摘（具体的にどのアナリストのどの証拠に問題があるかを明記、2-4個）"""),
@@ -95,7 +100,7 @@ class FactCheckerAgent:
                 "pessimistic_evidence": pessimistic_evidence_str if pessimistic_evidence_str else "（証拠なし）"
             })
             
-            return result
+            return self._normalize_critique(result)
             
         except Exception as e:
             # 構造化出力が崩れた場合は、JSON出力を強制して復旧を試みる
@@ -106,6 +111,28 @@ class FactCheckerAgent:
                 article_text=article_text,
                 original_error=e,
             )
+
+    def _normalize_critique(self, critique: Critique) -> Critique:
+        """
+        CritiqueをUI表示向けに正規化する。
+        - factual_errors の各項目を200文字以内に丸める
+        """
+        try:
+            bias_points = list(getattr(critique, "bias_points", []) or [])
+            factual_errors = list(getattr(critique, "factual_errors", []) or [])
+            factual_errors = [self._truncate_text(x, 200) for x in factual_errors]
+            return Critique(bias_points=bias_points, factual_errors=factual_errors)
+        except Exception:
+            # 失敗時は元のまま返す
+            return critique
+
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        s = "" if text is None else str(text)
+        s = s.strip()
+        if len(s) <= max_chars:
+            return s
+        return s[:max_chars].rstrip() + "…"
 
     def _truncate_article_text(self, article_text: str, max_chars: int = 8000) -> str:
         """
@@ -156,8 +183,10 @@ class FactCheckerAgent:
             data = json.loads(json_text)
 
             if hasattr(Critique, "model_validate"):
-                return Critique.model_validate(data)  # pydantic v2
-            return Critique.parse_obj(data)  # pydantic v1
+                critique = Critique.model_validate(data)  # pydantic v2
+            else:
+                critique = Critique.parse_obj(data)  # pydantic v1
+            return self._normalize_critique(critique)
 
         except Exception as e:
             print(f"ファクトチェックフォールバックエラー: {e}")

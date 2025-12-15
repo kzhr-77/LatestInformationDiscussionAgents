@@ -19,8 +19,13 @@ def create_graph(model_name: str = "gemma3:4b"):
         コンパイル済みのStateGraph
     """
     llm = get_llm(model_name)
-    # ファクトチェッカー用は温度を低めに設定（事実検証のため）
-    llm_fact_checker = get_llm(model_name, temperature=0.3)
+    # ファクトチェッカー用は温度を低め＋反復抑制（末尾の同一文反復を軽減）
+    llm_fact_checker = get_llm(
+        model_name,
+        temperature=0.3,
+        repeat_penalty=1.15,
+        repeat_last_n=128,
+    )
     
     # Initialize agents
     researcher = ResearcherAgent(llm)

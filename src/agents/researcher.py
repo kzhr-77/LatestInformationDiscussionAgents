@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from langchain_core.language_models import BaseChatModel
 from langchain_community.tools.tavily_search import TavilySearchResults
+from src.utils.rss import fetch_feed_xml, load_rss_feed_urls, parse_feed, rank_items_by_query
 
 class ResearcherAgent:
     """
@@ -24,6 +25,7 @@ class ResearcherAgent:
         self.model = model
         self.tavily_tool = None
         self._init_tavily()
+        self.rss_feed_urls = load_rss_feed_urls()
     
     def _init_tavily(self):
         """Tavily検索ツールを初期化（APIキーがある場合のみ）"""
@@ -33,6 +35,65 @@ class ResearcherAgent:
                 self.tavily_tool = TavilySearchResults(max_results=3, api_key=api_key)
         except Exception as e:
             print(f"Tavily初期化エラー（キーワード検索は使用できません）: {e}")
+
+    def _search_with_rss(self, query: str) -> str:
+        """
+        RSS/公式フィード許可リストからキーワードに合致する記事URLを探し、本文を取得する。
+
+        設計方針:
+        - 許可リスト（環境変数 RSS_FEED_URLS または config/rss_feeds.txt）に限定
+        - 無差別クロールはしない
+        """
+        if not query or not query.strip():
+            raise ValueError("検索キーワードが空です。")
+
+        feed_urls = self.rss_feed_urls or load_rss_feed_urls()
+        if not feed_urls:
+            raise ValueError(
+                "RSSフィード許可リストが未設定です。\n"
+                "環境変数 RSS_FEED_URLS を設定するか、config/rss_feeds.txt にRSS/AtomのURLを記載してください。"
+            )
+
+        # フィードを集約して候補記事を収集
+        all_items = []
+        for feed_url in feed_urls[:50]:  # 念のため上限
+            try:
+                xml = fetch_feed_xml(feed_url, timeout=10)
+                items = parse_feed(xml)
+                all_items.extend(items)
+            except Exception as e:
+                print(f"RSS取得失敗: {feed_url} ({e})")
+                continue
+
+        if not all_items:
+            raise ValueError("RSSフィードから記事候補を取得できませんでした。")
+
+        ranked = rank_items_by_query(all_items, query=query, limit=5)
+        if not ranked:
+            raise ValueError(f"RSSフィード内にキーワード '{query}' の一致が見つかりませんでした。")
+
+        # 上位から最大3件の本文を取得（同一URLは除外）
+        texts = []
+        seen_urls = set()
+        for it in ranked:
+            url = (it.link or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            try:
+                article = self._fetch_from_url(url)
+                header = f"[source] {url}\n[title] {it.title}".strip()
+                texts.append(header + "\n\n" + article)
+            except Exception as e:
+                print(f"本文取得失敗: {url} ({e})")
+                continue
+            if len(texts) >= 3:
+                break
+
+        if not texts:
+            raise ValueError("候補URLから本文を取得できませんでした。")
+
+        return "\n\n" + ("\n\n" + ("-" * 40) + "\n\n").join(texts)
     
     def _is_url(self, text: str) -> bool:
         """
@@ -74,21 +135,26 @@ class ResearcherAgent:
             soup = BeautifulSoup(response.text, 'lxml')
             
             # 記事本文を抽出（一般的なHTMLタグから）
-            # まず、articleタグを探す
+            # - サイトによっては <article> が「見出しのみ」で本文が別DOMにあるケースがあるため
+            #   短すぎる場合は別の抽出方法へフォールバックする
+            text = ""
+
+            # 1) article
             article = soup.find('article')
             if article:
                 text = article.get_text(separator='\n', strip=True)
-            else:
-                # articleタグがない場合、mainタグを探す
+
+            # 2) main
+            if len(text) < 100:
                 main = soup.find('main')
                 if main:
                     text = main.get_text(separator='\n', strip=True)
-                else:
-                    # mainタグもない場合、body全体から不要な要素を除外
-                    # script, style, nav, footer, headerを削除
-                    for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                        tag.decompose()
-                    text = soup.get_text(separator='\n', strip=True)
+
+            # 3) body全体（不要要素を除外）
+            if len(text) < 100:
+                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                    tag.decompose()
+                text = soup.get_text(separator='\n', strip=True)
             
             # テキストを整形（空行を削除、長すぎる行を分割）
             lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -171,6 +237,12 @@ class ResearcherAgent:
             # URLの場合: 直接コンテンツを取得
             return self._fetch_from_url(topic)
         else:
-            # キーワードの場合: Tavily検索APIを使用
-            return self._search_with_tavily(topic)
+            # キーワードの場合: RSS許可リスト方式（安全重視）を優先
+            try:
+                return self._search_with_rss(topic)
+            except Exception as rss_err:
+                # RSS未設定などの場合のみ、Tavilyが使えるならフォールバック（任意）
+                if self.tavily_tool:
+                    return self._search_with_tavily(topic)
+                raise rss_err
 

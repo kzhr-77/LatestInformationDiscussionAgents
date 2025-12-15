@@ -46,7 +46,15 @@ def check_ollama_connection(base_url: str = "http://localhost:11434") -> bool:
     except Exception:
         return False
 
-def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:11434", temperature: float = 0.7):
+def get_llm(
+    model_name: str = "gemma3:4b",
+    base_url: str = "http://localhost:11434",
+    temperature: float = 0.7,
+    num_predict: int | None = None,
+    repeat_penalty: float | None = None,
+    repeat_last_n: int | None = None,
+    stop: list[str] | None = None,
+):
     """
     Ollamaを使用してLLMを取得する
     
@@ -54,6 +62,10 @@ def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:114
         model_name: 使用するOllamaモデル名（デフォルト: gemma3:4b）
         base_url: OllamaのベースURL（デフォルト: http://localhost:11434）
         temperature: 温度パラメータ（デフォルト: 0.7）
+        num_predict: 生成する最大トークン数（Ollama側の上限）
+        repeat_penalty: 反復抑制（1.0より大きいほど反復しにくい）
+        repeat_last_n: 直近Nトークンを反復判定に使う
+        stop: 生成停止シーケンス
     
     Returns:
         ChatOllamaインスタンス
@@ -75,7 +87,11 @@ def get_llm(model_name: str = "gemma3:4b", base_url: str = "http://localhost:114
     return ChatOllama(
         model=model_name,
         temperature=temperature,
-        base_url=base_url
+        base_url=base_url,
+        num_predict=num_predict,
+        repeat_penalty=repeat_penalty,
+        repeat_last_n=repeat_last_n,
+        stop=stop,
     )
     
     # OpenAI用（コメントアウト）
