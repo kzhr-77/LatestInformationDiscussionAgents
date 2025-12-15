@@ -3,6 +3,7 @@ from langchain_core.language_models import BaseChatModel
 from src.models.schemas import Argument, Critique
 import json
 import re
+import logging
 
 class FactCheckerAgent:
     """
@@ -104,7 +105,7 @@ class FactCheckerAgent:
             
         except Exception as e:
             # 構造化出力が崩れた場合は、JSON出力を強制して復旧を試みる
-            print(f"ファクトチェックエラー（structured_output）: {e}")
+            logging.getLogger(__name__).exception("ファクトチェックエラー（structured_output）: %s", e)
             return self._fallback_validate_as_json(
                 optimistic_argument=optimistic_argument,
                 pessimistic_argument=pessimistic_argument,
@@ -189,7 +190,7 @@ class FactCheckerAgent:
             return self._normalize_critique(critique)
 
         except Exception as e:
-            print(f"ファクトチェックフォールバックエラー: {e}")
+            logging.getLogger(__name__).exception("ファクトチェックフォールバックエラー: %s", e)
             return Critique(
                 bias_points=[
                     "検証に失敗しました（出力の構造化に失敗）。",

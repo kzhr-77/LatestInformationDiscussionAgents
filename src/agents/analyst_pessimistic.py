@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models import BaseChatModel
 from src.models.schemas import Argument, Critique, Rebuttal
+import logging
 
 class PessimisticAnalystAgent:
     """
@@ -86,7 +87,7 @@ class PessimisticAnalystAgent:
             
         except Exception as e:
             # エラーが発生した場合、フォールバックとしてモックデータを返す
-            print(f"悲観的分析エラー: {e}")
+            logging.getLogger(__name__).exception("悲観的分析エラー: %s", e)
             return Argument(
                 conclusion=f"分析中にエラーが発生しました: {str(e)}",
                 evidence=[]
@@ -118,7 +119,7 @@ class PessimisticAnalystAgent:
             
         except Exception as e:
             # エラーが発生した場合、フォールバックとしてモックデータを返す
-            print(f"悲観的反論エラー: {e}")
+            logging.getLogger(__name__).exception("悲観的反論エラー: %s", e)
             return Rebuttal(
                 counter_points=[f"エラー: {str(e)}"],
                 strengthened_evidence=[]

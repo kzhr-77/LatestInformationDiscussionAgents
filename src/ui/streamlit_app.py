@@ -2,6 +2,8 @@ import streamlit as st
 import os
 import sys
 from pathlib import Path
+import uuid
+import logging
 
 # Adjust path to import src
 # Note: Streamlitアプリは実行時に異なるディレクトリから起動される可能性があるため、
@@ -12,6 +14,10 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from src.core.graph import create_graph
+from src.utils.logging_config import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Discussion News Analysis", layout="wide")
 
@@ -42,7 +48,9 @@ if st.button("分析開始"):
             graph = create_graph(model_name)
             
             # 初期状態の設定
-            initial_state = {"topic": topic, "messages": []}
+            request_id = str(uuid.uuid4())
+            initial_state = {"topic": topic, "messages": [], "request_id": request_id}
+            logger.info("[%s] UI開始 topic=%s model=%s", request_id, topic, model_name)
             
             # グラフの実行
             with st.spinner("分析中..."):

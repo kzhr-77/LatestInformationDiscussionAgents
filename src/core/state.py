@@ -9,6 +9,7 @@ class DiscussionState(TypedDict, total=False):
     total=False として「キーは存在しない可能性がある」前提に合わせる。
     """
     topic: str
+    request_id: str
     article_text: str
     optimistic_argument: Optional[Argument]
     pessimistic_argument: Optional[Argument]

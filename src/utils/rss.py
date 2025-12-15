@@ -110,13 +110,13 @@ def parse_feed(xml_text: str) -> list[FeedItem]:
 def rank_items_by_query(items: Iterable[FeedItem], query: str, limit: int = 5) -> list[FeedItem]:
     """
     タイトル+概要に対して簡易キーワードマッチし、スコア順に上位を返す。
-    - クエリは空白区切りでトークン化
-    - スコア=一致トークン数（重複除外）
+    - 日本語は空白区切りが効きにくいので、クエリが単語1つの場合は簡易N-gramを併用
+    - スコアは「一致トークンの重み（長いほど重い）」の合計
     """
     q = (query or "").strip()
     if not q:
         return []
-    tokens = [t for t in re.split(r"\s+", q) if t]
+    tokens = _tokenize_query(q)
     if not tokens:
         return []
 
@@ -125,14 +125,56 @@ def rank_items_by_query(items: Iterable[FeedItem], query: str, limit: int = 5) -
         hay = f"{it.title}\n{it.summary}".lower()
         hit = 0
         for t in set(tokens):
-            if t.lower() in hay:
-                hit += 1
+            tl = t.lower()
+            if tl and tl in hay:
+                # 短いトークンはノイズになりやすいので重みを抑える
+                hit += max(1, min(len(tl), 6))
         if hit > 0:
             scored.append((hit, it))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     top = [it for _, it in scored[: max(0, limit)]]
     return top
+
+
+def _tokenize_query(q: str) -> list[str]:
+    """
+    クエリのトークン化。
+    - 空白区切りを基本
+    - 日本語等（CJKを含む）で単語1つの場合は2-gramを補助的に追加
+    """
+    parts = [p for p in re.split(r"\s+", q.strip()) if p]
+    if not parts:
+        return []
+
+    # すでに複数語なら、そのまま（"AI 技術" など）
+    if len(parts) >= 2:
+        return parts
+
+    token = parts[0]
+    if _has_cjk(token) and len(token) >= 4:
+        ngrams = _bigrams(token, max_ngrams=30)
+        return [token] + ngrams
+
+    return parts
+
+
+def _has_cjk(text: str) -> bool:
+    for ch in text:
+        o = ord(ch)
+        # CJK Unified Ideographs / Hiragana / Katakana / CJK Symbols
+        if (0x4E00 <= o <= 0x9FFF) or (0x3040 <= o <= 0x30FF) or (0x3000 <= o <= 0x303F):
+            return True
+    return False
+
+
+def _bigrams(text: str, max_ngrams: int = 30) -> list[str]:
+    out: list[str] = []
+    for i in range(max(0, len(text) - 1)):
+        out.append(text[i : i + 2])
+        if len(out) >= max_ngrams:
+            break
+    return out
 
 
 def _strip_namespaces(elem: ET.Element) -> None:

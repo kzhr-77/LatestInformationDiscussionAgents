@@ -1,12 +1,11 @@
-import re
 import os
-from typing import Optional
 from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from langchain_core.language_models import BaseChatModel
 from langchain_community.tools.tavily_search import TavilySearchResults
 from src.utils.rss import fetch_feed_xml, load_rss_feed_urls, parse_feed, rank_items_by_query
+import logging
 
 class ResearcherAgent:
     """
@@ -34,7 +33,7 @@ class ResearcherAgent:
             if api_key:
                 self.tavily_tool = TavilySearchResults(max_results=3, api_key=api_key)
         except Exception as e:
-            print(f"Tavily初期化エラー（キーワード検索は使用できません）: {e}")
+            logging.getLogger(__name__).exception("Tavily初期化エラー（キーワード検索は使用できません）: %s", e)
 
     def _search_with_rss(self, query: str) -> str:
         """
@@ -62,7 +61,7 @@ class ResearcherAgent:
                 items = parse_feed(xml)
                 all_items.extend(items)
             except Exception as e:
-                print(f"RSS取得失敗: {feed_url} ({e})")
+                logging.getLogger(__name__).warning("RSS取得失敗: %s (%s)", feed_url, e)
                 continue
 
         if not all_items:
@@ -72,7 +71,14 @@ class ResearcherAgent:
         if not ranked:
             raise ValueError(f"RSSフィード内にキーワード '{query}' の一致が見つかりませんでした。")
 
-        # 上位から最大3件の本文を取得（同一URLは除外）
+        # 既定は最上位1件（複数記事の混在で分析がブレやすいため）。必要なら環境変数で増やす。
+        try:
+            max_articles = int(os.getenv("RSS_MAX_ARTICLES", "1"))
+        except Exception:
+            max_articles = 1
+        max_articles = max(1, min(max_articles, 3))
+
+        # 上位から本文を取得（同一URLは除外）
         texts = []
         seen_urls = set()
         for it in ranked:
@@ -85,14 +91,16 @@ class ResearcherAgent:
                 header = f"[source] {url}\n[title] {it.title}".strip()
                 texts.append(header + "\n\n" + article)
             except Exception as e:
-                print(f"本文取得失敗: {url} ({e})")
+                logging.getLogger(__name__).warning("本文取得失敗: %s (%s)", url, e)
                 continue
-            if len(texts) >= 3:
+            if len(texts) >= max_articles:
                 break
 
         if not texts:
             raise ValueError("候補URLから本文を取得できませんでした。")
 
+        if len(texts) == 1:
+            return texts[0]
         return "\n\n" + ("\n\n" + ("-" * 40) + "\n\n").join(texts)
     
     def _is_url(self, text: str) -> bool:
@@ -133,31 +141,56 @@ class ResearcherAgent:
             response.encoding = response.apparent_encoding
             
             soup = BeautifulSoup(response.text, 'lxml')
+
+            # まず不要要素を削除（ノイズ混入を減らす）
+            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg']):
+                tag.decompose()
             
             # 記事本文を抽出（一般的なHTMLタグから）
             # - サイトによっては <article> が「見出しのみ」で本文が別DOMにあるケースがあるため
             #   短すぎる場合は別の抽出方法へフォールバックする
             text = ""
 
+            def extract_from(container) -> str:
+                # 段落中心に拾う（body全文のメニュー等を避ける）
+                parts = []
+                for el in container.find_all(["h1", "h2", "h3", "p", "li"]):
+                    t = el.get_text(separator=" ", strip=True)
+                    if not t:
+                        continue
+                    # 短すぎる断片は捨てる（シェア/ボタン等が混じりやすい）
+                    if len(t) < 5:
+                        continue
+                    parts.append(t)
+                return "\n".join(parts)
+
             # 1) article
             article = soup.find('article')
             if article:
-                text = article.get_text(separator='\n', strip=True)
+                text = extract_from(article) or article.get_text(separator='\n', strip=True)
 
             # 2) main
-            if len(text) < 100:
+            if len(text) < 200:
                 main = soup.find('main')
                 if main:
-                    text = main.get_text(separator='\n', strip=True)
+                    text = extract_from(main) or main.get_text(separator='\n', strip=True)
 
-            # 3) body全体（不要要素を除外）
-            if len(text) < 100:
-                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                    tag.decompose()
-                text = soup.get_text(separator='\n', strip=True)
+            # 3) body全体（最終フォールバック）
+            if len(text) < 200:
+                body = soup.find('body') or soup
+                text = extract_from(body) or body.get_text(separator='\n', strip=True)
             
             # テキストを整形（空行を削除、長すぎる行を分割）
             lines = [line.strip() for line in text.split('\n') if line.strip()]
+            # 重複行を除去（ナビ/パンくず等の反復ノイズを軽減）
+            deduped = []
+            seen = set()
+            for line in lines:
+                if line in seen:
+                    continue
+                seen.add(line)
+                deduped.append(line)
+            lines = deduped
             text = '\n'.join(lines)
             
             if len(text) < 100:

@@ -6,7 +6,9 @@ from src.agents.analyst_pessimistic import PessimisticAnalystAgent
 from src.agents.fact_checker import FactCheckerAgent
 from src.agents.reporter import ReporterAgent
 from src.utils.llm import get_llm
+from src.utils.llm_profiles import get_profile
 from src.models.schemas import Argument, Critique, FinalReport
+import logging
 
 def create_graph(model_name: str = "gemma3:4b"):
     """
@@ -18,14 +20,10 @@ def create_graph(model_name: str = "gemma3:4b"):
     Returns:
         コンパイル済みのStateGraph
     """
-    llm = get_llm(model_name)
-    # ファクトチェッカー用は温度を低め＋反復抑制（末尾の同一文反復を軽減）
-    llm_fact_checker = get_llm(
-        model_name,
-        temperature=0.3,
-        repeat_penalty=1.15,
-        repeat_last_n=128,
-    )
+    logger = logging.getLogger(__name__)
+
+    llm = get_llm(model_name, **get_profile("analysis").to_kwargs())
+    llm_fact_checker = get_llm(model_name, **get_profile("fact_check").to_kwargs())
     
     # Initialize agents
     researcher = ResearcherAgent(llm)
@@ -37,6 +35,7 @@ def create_graph(model_name: str = "gemma3:4b"):
     # Define nodes
     def research_node(state: DiscussionState):
         """フェーズ0: 記事取得ノード"""
+        rid = state.get("request_id", "-")
         try:
             if not state.get("topic"):
                 raise ValueError("トピックが指定されていません")
@@ -45,12 +44,12 @@ def create_graph(model_name: str = "gemma3:4b"):
                 raise ValueError("記事の取得に失敗しました")
             return {"article_text": article}
         except Exception as e:
-            # エラーをログに記録し、空の記事テキストを返す
-            print(f"リサーチエラー: {e}")
+            logger.exception("[%s] リサーチエラー: %s", rid, e)
             return {"article_text": f"エラー: {str(e)}"}
 
     def optimist_node(state: DiscussionState):
         """フェーズ1: 楽観的分析ノード"""
+        rid = state.get("request_id", "-")
         try:
             if not state.get("article_text"):
                 raise ValueError("記事テキストがありません")
@@ -58,7 +57,7 @@ def create_graph(model_name: str = "gemma3:4b"):
             arg = optimist.analyze(state["article_text"])
             return {"optimistic_argument": arg}
         except Exception as e:
-            print(f"楽観的分析エラー: {e}")
+            logger.exception("[%s] 楽観的分析エラー: %s", rid, e)
             return {"optimistic_argument": Argument(
                 conclusion=f"エラー: {str(e)}",
                 evidence=[]
@@ -66,6 +65,7 @@ def create_graph(model_name: str = "gemma3:4b"):
 
     def pessimist_node(state: DiscussionState):
         """フェーズ1: 悲観的分析ノード"""
+        rid = state.get("request_id", "-")
         try:
             if not state.get("article_text"):
                 raise ValueError("記事テキストがありません")
@@ -73,7 +73,7 @@ def create_graph(model_name: str = "gemma3:4b"):
             arg = pessimist.analyze(state["article_text"])
             return {"pessimistic_argument": arg}
         except Exception as e:
-            print(f"悲観的分析エラー: {e}")
+            logger.exception("[%s] 悲観的分析エラー: %s", rid, e)
             return {"pessimistic_argument": Argument(
                 conclusion=f"エラー: {str(e)}",
                 evidence=[]
@@ -81,6 +81,7 @@ def create_graph(model_name: str = "gemma3:4b"):
     
     def checker_node(state: DiscussionState):
         """フェーズ2: ファクトチェックノード"""
+        rid = state.get("request_id", "-")
         try:
             optimistic_arg = state.get("optimistic_argument")
             pessimistic_arg = state.get("pessimistic_argument")
@@ -97,7 +98,7 @@ def create_graph(model_name: str = "gemma3:4b"):
             return {"critique": critique}
             
         except Exception as e:
-            print(f"ファクトチェックエラー: {e}")
+            logger.exception("[%s] ファクトチェックエラー: %s", rid, e)
             return {"critique": Critique(
                 bias_points=[],
                 factual_errors=[f"エラー: {str(e)}"]
@@ -105,6 +106,7 @@ def create_graph(model_name: str = "gemma3:4b"):
 
     def reporter_node(state: DiscussionState):
         """フェーズ4: レポート生成ノード"""
+        rid = state.get("request_id", "-")
         try:
             report = reporter.create_report(state.get("messages", []))
             # Mocking return
@@ -130,7 +132,7 @@ def create_graph(model_name: str = "gemma3:4b"):
                     final_conclusion=report.get("final_conclusion", str(report)) if isinstance(report, dict) else str(report)
                 )}
         except Exception as e:
-            print(f"レポート生成エラー: {e}")
+            logger.exception("[%s] レポート生成エラー: %s", rid, e)
             optimistic_arg = state.get("optimistic_argument") or Argument(conclusion="", evidence=[])
             pessimistic_arg = state.get("pessimistic_argument") or Argument(conclusion="", evidence=[])
             return {"final_report": FinalReport(
