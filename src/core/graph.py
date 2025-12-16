@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, END
 from src.core.state import DiscussionState
 from src.agents.researcher import ResearcherAgent
+from src.agents.researcher import RssKeywordNotFoundError
 from src.agents.analyst_optimistic import OptimisticAnalystAgent
 from src.agents.analyst_pessimistic import PessimisticAnalystAgent
 from src.agents.fact_checker import FactCheckerAgent
@@ -10,7 +11,12 @@ from src.utils.llm_profiles import get_profile
 from src.models.schemas import Argument, Critique, FinalReport, Rebuttal
 import logging
 
-def create_graph(model_name: str = "gemma3:4b"):
+def create_graph(
+    model_name: str = "gemma3:4b",
+    llm=None,
+    llm_fact_checker=None,
+    researcher_agent=None,
+):
     """
     討論システムのグラフを作成する
     
@@ -22,17 +28,28 @@ def create_graph(model_name: str = "gemma3:4b"):
     """
     logger = logging.getLogger(__name__)
 
-    llm = get_llm(model_name, **get_profile("analysis").to_kwargs())
-    llm_fact_checker = get_llm(model_name, **get_profile("fact_check").to_kwargs())
+    # 通常はOllamaでLLMを生成するが、テスト/スモーク用途では外部から注入できるようにする
+    if llm is None:
+        llm = get_llm(model_name, **get_profile("analysis").to_kwargs())
+    if llm_fact_checker is None:
+        llm_fact_checker = get_llm(model_name, **get_profile("fact_check").to_kwargs())
     
     # Initialize agents
-    researcher = ResearcherAgent(llm)
+    researcher = researcher_agent or ResearcherAgent(llm)
     optimist = OptimisticAnalystAgent(llm)
     pessimist = PessimisticAnalystAgent(llm)
     checker = FactCheckerAgent(llm_fact_checker)
     reporter = ReporterAgent(llm)
 
     # Define nodes
+    def _truncate_for_prompt(text: str, max_chars: int = 4000) -> str:
+        s = (text or "").strip()
+        if len(s) <= max_chars:
+            return s
+        head = s[: max_chars // 2]
+        tail = s[-(max_chars // 2) :]
+        return head + "\n\n...(中略)...\n\n" + tail
+
     def research_node(state: DiscussionState):
         """フェーズ0: 記事取得ノード"""
         rid = state.get("request_id", "-")
@@ -43,6 +60,10 @@ def create_graph(model_name: str = "gemma3:4b"):
             if not article:
                 raise ValueError("記事の取得に失敗しました")
             return {"article_text": article}
+        except RssKeywordNotFoundError as e:
+            # RSSに候補が無い場合は通知して終了（後続フェーズは回さない）
+            logger.info("[%s] RSSキーワード一致なし: %s", rid, e)
+            return {"halt": True, "halt_reason": str(e)}
         except Exception as e:
             logger.exception("[%s] リサーチエラー: %s", rid, e)
             return {"article_text": f"エラー: {str(e)}"}
@@ -83,6 +104,9 @@ def create_graph(model_name: str = "gemma3:4b"):
         """フェーズ2: ファクトチェックノード"""
         rid = state.get("request_id", "-")
         try:
+            # 既にcritiqueがある場合は再実行を避ける（分岐/合流の実装差異に備える）
+            if state.get("critique") is not None:
+                return {}
             optimistic_arg = state.get("optimistic_argument")
             pessimistic_arg = state.get("pessimistic_argument")
             article_text = state.get("article_text", "")
@@ -108,6 +132,8 @@ def create_graph(model_name: str = "gemma3:4b"):
         """フェーズ3: 楽観的アナリスト反論ノード"""
         rid = state.get("request_id", "-")
         try:
+            if state.get("optimistic_rebuttal") is not None:
+                return {}
             critique = state.get("critique")
             optimistic_arg = state.get("optimistic_argument")
             pessimistic_arg = state.get("pessimistic_argument")
@@ -117,6 +143,7 @@ def create_graph(model_name: str = "gemma3:4b"):
                 critique=critique,
                 opponent_argument=pessimistic_arg,
                 original_argument=optimistic_arg,
+                article_text=_truncate_for_prompt(state.get("article_text", "")),
             )
             return {"optimistic_rebuttal": rebuttal}
         except Exception as e:
@@ -127,6 +154,8 @@ def create_graph(model_name: str = "gemma3:4b"):
         """フェーズ3: 悲観的アナリスト反論ノード"""
         rid = state.get("request_id", "-")
         try:
+            if state.get("pessimistic_rebuttal") is not None:
+                return {}
             critique = state.get("critique")
             optimistic_arg = state.get("optimistic_argument")
             pessimistic_arg = state.get("pessimistic_argument")
@@ -136,6 +165,7 @@ def create_graph(model_name: str = "gemma3:4b"):
                 critique=critique,
                 opponent_argument=optimistic_arg,
                 original_argument=pessimistic_arg,
+                article_text=_truncate_for_prompt(state.get("article_text", "")),
             )
             return {"pessimistic_rebuttal": rebuttal}
         except Exception as e:
@@ -146,6 +176,9 @@ def create_graph(model_name: str = "gemma3:4b"):
         """フェーズ4: レポート生成ノード"""
         rid = state.get("request_id", "-")
         try:
+            # 既にfinal_reportがある場合は再実行を避ける（分岐/合流の実装差異に備える）
+            if state.get("final_report") is not None:
+                return {}
             report = reporter.create_report(state.get("messages", []))
             # Mocking return
             # TODO: 実際の実装では、LLMからFinalReport型を直接取得する
@@ -185,6 +218,7 @@ def create_graph(model_name: str = "gemma3:4b"):
 
     # Add nodes
     workflow.add_node("researcher", research_node)
+    workflow.add_node("dispatch", lambda state: {})
     workflow.add_node("optimist", optimist_node)
     workflow.add_node("pessimist", pessimist_node)
     workflow.add_node("checker", checker_node)
@@ -194,14 +228,35 @@ def create_graph(model_name: str = "gemma3:4b"):
 
     # Define edges
     workflow.set_entry_point("researcher")
-    workflow.add_edge("researcher", "optimist")
-    workflow.add_edge("researcher", "pessimist")
-    # AND合流: 楽観・悲観の両方が完了してからcheckerを1回だけ実行する
-    workflow.add_edge(["optimist", "pessimist"], "checker")
+
+    def _route_after_research(state: DiscussionState) -> str:
+        return END if state.get("halt") else "dispatch"
+
+    workflow.add_conditional_edges(
+        "researcher",
+        _route_after_research,
+        {
+            END: END,
+            "dispatch": "dispatch",
+        },
+    )
+
+    workflow.add_edge("dispatch", "optimist")
+    workflow.add_edge("dispatch", "pessimist")
+    # AND合流: 実装差異に備え、リスト合流が使えない場合は個別エッジ＋ノード側ガードで冪等化する
+    try:
+        workflow.add_edge(["optimist", "pessimist"], "checker")
+    except Exception:
+        workflow.add_edge("optimist", "checker")
+        workflow.add_edge("pessimist", "checker")
     workflow.add_edge("checker", "optimist_rebuttal")
     workflow.add_edge("checker", "pessimist_rebuttal")
-    # AND合流: 両反論が揃ってからレポートへ
-    workflow.add_edge(["optimist_rebuttal", "pessimist_rebuttal"], "reporter")
+    # AND合流: 両反論が揃ってからレポートへ（非対応なら個別エッジ＋reporterガード）
+    try:
+        workflow.add_edge(["optimist_rebuttal", "pessimist_rebuttal"], "reporter")
+    except Exception:
+        workflow.add_edge("optimist_rebuttal", "reporter")
+        workflow.add_edge("pessimist_rebuttal", "reporter")
     workflow.add_edge("reporter", END)
 
     return workflow.compile()

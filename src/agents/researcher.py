@@ -7,6 +7,11 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from src.utils.rss import fetch_feed_xml, load_rss_feed_urls, parse_feed, rank_items_by_query
 import logging
 
+
+class RssKeywordNotFoundError(ValueError):
+    """RSSフィード内に検索キーワードの一致が見つからなかった場合の例外。"""
+
+
 class ResearcherAgent:
     """
     リサーチャーエージェント
@@ -69,7 +74,7 @@ class ResearcherAgent:
 
         ranked = rank_items_by_query(all_items, query=query, limit=5)
         if not ranked:
-            raise ValueError(f"RSSフィード内にキーワード '{query}' の一致が見つかりませんでした。")
+            raise RssKeywordNotFoundError(f"RSSフィード内にキーワード '{query}' の一致が見つかりませんでした。")
 
         # 既定は最上位1件（複数記事の混在で分析がブレやすいため）。必要なら環境変数で増やす。
         try:

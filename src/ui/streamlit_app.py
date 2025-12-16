@@ -57,6 +57,10 @@ if st.button("分析開始"):
                 result = graph.invoke(initial_state)
             
             st.success("分析完了！")
+
+            if result.get("halt"):
+                st.warning(result.get("halt_reason") or "処理を終了しました。")
+                st.stop()
             
             # 結果の表示
             col1, col2 = st.columns(2)

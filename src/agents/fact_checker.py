@@ -197,7 +197,7 @@ class FactCheckerAgent:
 
             prompt = ChatPromptTemplate.from_messages([
                 ("system", "あなたは客観的なファクトチェッカーです。必ずJSONのみを出力してください。"),
-                ("human", """以下を検証し、次のJSONのみを返してください。\n\nJSONスキーマ:\n{\n  \"bias_points\": [\"...\"] ,\n  \"factual_errors\": [\"...\"]\n}\n\n元の記事:\n{article_text}\n\n楽観的アナリスト:\n結論: {optimistic_conclusion}\n証拠:\n{optimistic_evidence}\n\n悲観的アナリスト:\n結論: {pessimistic_conclusion}\n証拠:\n{pessimistic_evidence}\n""")
+                ("human", """以下を検証し、次のJSONのみを返してください。\n\nJSONスキーマ:\n{{\n  \"bias_points\": [\"...\"] ,\n  \"factual_errors\": [\"...\"]\n}}\n\n元の記事:\n{article_text}\n\n楽観的アナリスト:\n結論: {optimistic_conclusion}\n証拠:\n{optimistic_evidence}\n\n悲観的アナリスト:\n結論: {pessimistic_conclusion}\n証拠:\n{pessimistic_evidence}\n""")
             ])
             raw = (prompt | self.model).invoke({
                 "article_text": self._truncate_article_text(article_text),

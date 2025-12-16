@@ -29,16 +29,19 @@
 **処理フロー**:
 1. 入力がURLかキーワードかを判定
 2. URLの場合: 直接コンテンツを取得（BeautifulSoup等を使用）
-3. キーワードの場合: Tavily検索APIを使用して最新記事を検索
+3. キーワードの場合: **RSS/公式フィード許可リスト方式**で記事候補を検索（安全重視・外部検索API不要）
+4. （任意）Tavily検索APIは **APIキーがある場合のみフォールバック**として利用
 4. 記事テキストを抽出・整形
 5. テキストを返却
 
 **使用ツール**:
-- `TavilySearchResults` (キーワード検索用)
+- RSS/Atom取得・パース（許可リスト: `RSS_FEED_URLS` または `config/rss_feeds.txt`）
+- `TavilySearchResults`（キーワード検索の任意フォールバック: `TAVILY_API_KEY` がある場合のみ）
 - ウェブスクレイピングライブラリ（URL直接取得用）
 
 **エラーハンドリング**:
-- 検索結果が見つからない場合: エラーメッセージを返す
+- RSSフィード内にキーワード一致が見つからない場合: `RssKeywordNotFoundError` を送出（上位のグラフで通知して早期終了）
+- 検索結果が見つからない/取得失敗の場合: `ValueError` を送出（上位でログ＋フォールバック）
 - ネットワークエラー: リトライロジックを実装
 
 ---
@@ -64,6 +67,8 @@
 - **入力**:
   - `critique: Critique` - ファクトチェッカーからの批判
   - `opponent_argument: Argument` - 相手（悲観的アナリスト）の主張
+  - （実装）`original_argument: Argument` - 自分の主張（フェーズ1の出力）
+  - （実装）`article_text: Optional[str]` - 元記事（既定はプロンプトに入れず、環境変数で切替可能）
 - **出力**:
   - `Rebuttal` (新規Pydanticモデル)
     - `counter_points: List[str]` - 相手の主張への反論ポイント
@@ -111,6 +116,8 @@
 ### 2.4 実装上の注意点
 - LLMの構造化出力機能（`.with_structured_output()`）を使用して `Argument` モデルに直接マッピング
 - 温度パラメータ: `temperature=0.7`（創造性と一貫性のバランス）
+- （実装）プロンプト文字列の組み立てはヘルパーで行い、`evidence=None` 等でも落ちないように防御している
+- （実装）`ENABLE_REBUTTAL_ARTICLE_CONTEXT=1` のときのみ、反論プロンプトへ `article_text` を追加する
 
 ---
 
@@ -130,6 +137,7 @@
 
 #### フェーズ 3: `debate(critique: Critique, opponent_argument: Argument) -> Rebuttal`
 - **入力**: 批判と相手（楽観的アナリスト）の主張
+- （実装）`original_argument: Argument` / `article_text: Optional[str]` を追加（楽観側と同様）
 - **出力**: `Rebuttal`
 
 ### 3.3 プロンプト設計方針
@@ -218,17 +226,11 @@
 
 ### 5.2 入力・出力仕様
 
-#### `create_report(
-    article_text: str,
-    optimistic_argument: Argument,
-    pessimistic_argument: Argument,
-    critique: Critique,
-    optimistic_rebuttal: Rebuttal,
-    pessimistic_rebuttal: Rebuttal
-) -> FinalReport`
-- **入力**: 全フェーズの出力データ
-- **出力**:
-  - `FinalReport` (Pydanticモデル)
+#### （設計）`create_report(...全フェーズの出力...) -> FinalReport`
+- **状態**: 現在の実装は **モック**。`create_report(discussion_history: list) -> str` が固定文字列を返し、グラフ側で `FinalReport` に詰め替えている。
+- **設計上の入力/出力**:
+  - **入力**: 全フェーズの出力データ
+  - **出力**: `FinalReport` (Pydanticモデル)
     - `article_info: str` - 記事タイトル、ソース、要約
     - `optimistic_view: Argument` - 楽観的アナリストの最終的な主張
     - `pessimistic_view: Argument` - 悲観的アナリストの最終的な主張
@@ -299,8 +301,11 @@ class ArticleMetadata(BaseModel):
 
 ### 6.2 `DiscussionState` の更新
 ```python
-class DiscussionState(TypedDict):
+class DiscussionState(TypedDict, total=False):
     topic: str
+    request_id: str
+    halt: bool
+    halt_reason: str
     article_text: str
     optimistic_argument: Optional[Argument]
     pessimistic_argument: Optional[Argument]
@@ -339,6 +344,10 @@ class DiscussionState(TypedDict):
 - **単体テスト**: 各メソッドの入力・出力の検証
 - **統合テスト**: LangGraphフロー全体の動作確認
 - **品質テスト**: 生成される主張・レポートの品質評価（仕様書の評価ポイントに基づく）
+
+（実装済み・軽量スモーク）
+- `tools/smoke_phase3_no_ollama.py`: 外部LLM無しでフェーズ3まで完走し、出力キーが揃うことを確認
+- `tools/smoke_rss_no_keyword_exits.py`: RSSキーワード一致なしの場合に通知して早期終了することを確認
 
 ---
 

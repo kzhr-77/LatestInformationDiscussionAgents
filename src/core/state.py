@@ -10,6 +10,8 @@ class DiscussionState(TypedDict, total=False):
     """
     topic: str
     request_id: str
+    halt: bool
+    halt_reason: str
     article_text: str
     optimistic_argument: Optional[Argument]
     pessimistic_argument: Optional[Argument]
