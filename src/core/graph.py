@@ -7,7 +7,7 @@ from src.agents.fact_checker import FactCheckerAgent
 from src.agents.reporter import ReporterAgent
 from src.utils.llm import get_llm
 from src.utils.llm_profiles import get_profile
-from src.models.schemas import Argument, Critique, FinalReport
+from src.models.schemas import Argument, Critique, FinalReport, Rebuttal
 import logging
 
 def create_graph(model_name: str = "gemma3:4b"):
@@ -104,6 +104,44 @@ def create_graph(model_name: str = "gemma3:4b"):
                 factual_errors=[f"エラー: {str(e)}"]
             )}
 
+    def optimist_rebuttal_node(state: DiscussionState):
+        """フェーズ3: 楽観的アナリスト反論ノード"""
+        rid = state.get("request_id", "-")
+        try:
+            critique = state.get("critique")
+            optimistic_arg = state.get("optimistic_argument")
+            pessimistic_arg = state.get("pessimistic_argument")
+            if not critique or not optimistic_arg or not pessimistic_arg:
+                raise ValueError("反論に必要なデータ（critique/arguments）が不足しています")
+            rebuttal = optimist.debate(
+                critique=critique,
+                opponent_argument=pessimistic_arg,
+                original_argument=optimistic_arg,
+            )
+            return {"optimistic_rebuttal": rebuttal}
+        except Exception as e:
+            logger.exception("[%s] 楽観的反論エラー: %s", rid, e)
+            return {"optimistic_rebuttal": Rebuttal(counter_points=[f"エラー: {str(e)}"], strengthened_evidence=[])}
+
+    def pessimist_rebuttal_node(state: DiscussionState):
+        """フェーズ3: 悲観的アナリスト反論ノード"""
+        rid = state.get("request_id", "-")
+        try:
+            critique = state.get("critique")
+            optimistic_arg = state.get("optimistic_argument")
+            pessimistic_arg = state.get("pessimistic_argument")
+            if not critique or not optimistic_arg or not pessimistic_arg:
+                raise ValueError("反論に必要なデータ（critique/arguments）が不足しています")
+            rebuttal = pessimist.debate(
+                critique=critique,
+                opponent_argument=optimistic_arg,
+                original_argument=pessimistic_arg,
+            )
+            return {"pessimistic_rebuttal": rebuttal}
+        except Exception as e:
+            logger.exception("[%s] 悲観的反論エラー: %s", rid, e)
+            return {"pessimistic_rebuttal": Rebuttal(counter_points=[f"エラー: {str(e)}"], strengthened_evidence=[])}
+
     def reporter_node(state: DiscussionState):
         """フェーズ4: レポート生成ノード"""
         rid = state.get("request_id", "-")
@@ -150,6 +188,8 @@ def create_graph(model_name: str = "gemma3:4b"):
     workflow.add_node("optimist", optimist_node)
     workflow.add_node("pessimist", pessimist_node)
     workflow.add_node("checker", checker_node)
+    workflow.add_node("optimist_rebuttal", optimist_rebuttal_node)
+    workflow.add_node("pessimist_rebuttal", pessimist_rebuttal_node)
     workflow.add_node("reporter", reporter_node)
 
     # Define edges
@@ -158,7 +198,10 @@ def create_graph(model_name: str = "gemma3:4b"):
     workflow.add_edge("researcher", "pessimist")
     # AND合流: 楽観・悲観の両方が完了してからcheckerを1回だけ実行する
     workflow.add_edge(["optimist", "pessimist"], "checker")
-    workflow.add_edge("checker", "reporter")
+    workflow.add_edge("checker", "optimist_rebuttal")
+    workflow.add_edge("checker", "pessimist_rebuttal")
+    # AND合流: 両反論が揃ってからレポートへ
+    workflow.add_edge(["optimist_rebuttal", "pessimist_rebuttal"], "reporter")
     workflow.add_edge("reporter", END)
 
     return workflow.compile()

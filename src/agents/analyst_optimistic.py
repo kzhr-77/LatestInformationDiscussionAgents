@@ -93,13 +93,14 @@ class OptimisticAnalystAgent:
                 evidence=[]
             )
     
-    def debate(self, critique: Critique, opponent_argument: Argument) -> Rebuttal:
+    def debate(self, critique: Critique, opponent_argument: Argument, original_argument: Argument) -> Rebuttal:
         """
         ファクトチェッカーの批判と相手の主張に対して反論する（フェーズ3）
         
         Args:
             critique: ファクトチェッカーからの批判
             opponent_argument: 悲観的アナリストの主張
+            original_argument: 自分（楽観的アナリスト）の主張（フェーズ1の出力）
         
         Returns:
             Rebuttal: 反論ポイントと補強証拠
@@ -110,7 +111,7 @@ class OptimisticAnalystAgent:
             
             # LLMを呼び出して構造化出力を取得
             result = chain.invoke({
-                "original_argument": "（元の主張は後で追加）",  # TODO: 元の主張を渡す
+                "original_argument": f"結論: {original_argument.conclusion}\n証拠:\n" + "\n".join([f"- {ev}" for ev in (original_argument.evidence or [])]),
                 "opponent_argument": f"結論: {opponent_argument.conclusion}\n証拠: {', '.join(opponent_argument.evidence)}",
                 "critique": f"バイアス指摘: {', '.join(critique.bias_points)}\n事実誤り: {', '.join(critique.factual_errors)}"
             })

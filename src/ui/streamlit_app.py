@@ -107,6 +107,43 @@ if st.button("分析開始"):
                     st.write(critique)
             else:
                 st.info("データがありません")
+
+            st.subheader("討論（反論）")
+            col3, col4 = st.columns(2)
+
+            with col3:
+                st.markdown("**楽観的アナリストの反論**")
+                optimistic_rebuttal = result.get("optimistic_rebuttal")
+                if optimistic_rebuttal and hasattr(optimistic_rebuttal, "counter_points"):
+                    if optimistic_rebuttal.counter_points:
+                        st.write("**反論ポイント**:")
+                        for p in optimistic_rebuttal.counter_points:
+                            st.write(f"- {p}")
+                    if optimistic_rebuttal.strengthened_evidence:
+                        st.write("**補強証拠**:")
+                        for ev in optimistic_rebuttal.strengthened_evidence:
+                            st.write(f"- {ev}")
+                elif optimistic_rebuttal:
+                    st.write(optimistic_rebuttal)
+                else:
+                    st.info("データがありません")
+
+            with col4:
+                st.markdown("**悲観的アナリストの反論**")
+                pessimistic_rebuttal = result.get("pessimistic_rebuttal")
+                if pessimistic_rebuttal and hasattr(pessimistic_rebuttal, "counter_points"):
+                    if pessimistic_rebuttal.counter_points:
+                        st.write("**反論ポイント**:")
+                        for p in pessimistic_rebuttal.counter_points:
+                            st.write(f"- {p}")
+                    if pessimistic_rebuttal.strengthened_evidence:
+                        st.write("**補強証拠**:")
+                        for ev in pessimistic_rebuttal.strengthened_evidence:
+                            st.write(f"- {ev}")
+                elif pessimistic_rebuttal:
+                    st.write(pessimistic_rebuttal)
+                else:
+                    st.info("データがありません")
             
             st.header("最終レポート")
             final_report = result.get("final_report")
