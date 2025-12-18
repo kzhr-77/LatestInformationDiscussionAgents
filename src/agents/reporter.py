@@ -265,38 +265,56 @@ class ReporterAgent:
         try:
             title, url, body = self._extract_article_header(article_text, fallback_url=article_url)
 
-            # 1) 事実抽出（本文ベース）
-            facts_chain = self.facts_prompt | self.model.with_structured_output(ExtractedFacts)
-            extracted: ExtractedFacts = facts_chain.invoke(
-                {
-                    "article_title": title,
-                    "article_url": url,
-                    "article_text": self._truncate(body, 8000),
-                    "article_quotes": self._pick_article_quotes(body, limit=6),
-                }
-            )
+            quote_lines = [ln.strip()[2:].strip() for ln in self._pick_article_quotes(body, limit=6).splitlines() if ln.strip().startswith("- ")]
 
-            extracted_facts = list(getattr(extracted, "key_facts", []) or [])
-            unknowns = list(getattr(extracted, "unknowns", []) or [])
+            # 1) 事実抽出（本文ベース）: 失敗しても機械抽出で続行（案R1）
+            extracted_facts: list[str] = []
+            unknowns: list[str] = []
+            try:
+                facts_chain = self.facts_prompt | self.model.with_structured_output(ExtractedFacts)
+                extracted: ExtractedFacts = facts_chain.invoke(
+                    {
+                        "article_title": title,
+                        "article_url": url,
+                        "article_text": self._truncate(body, 8000),
+                        "article_quotes": "\n".join([f"- {x}" for x in quote_lines]) if quote_lines else "（抽出できませんでした）",
+                    }
+                )
+                extracted_facts = list(getattr(extracted, "key_facts", []) or [])
+                unknowns = list(getattr(extracted, "unknowns", []) or [])
+            except Exception as e:
+                logging.getLogger(__name__).exception("事実抽出エラー（フォールバックへ切替）: %s", e)
+                # 機械抽出: 引用候補をそのまま事実候補として利用
+                extracted_facts = quote_lines[:8] if quote_lines else []
+                unknowns = [
+                    "記事本文だけでは影響評価や因果の断定が難しい点がある可能性。",
+                    "アナリストの主張の一部は本文の直接引用ではない可能性。",
+                ]
+
             extracted_facts_text = "\n".join([f"- {x}" for x in extracted_facts]) if extracted_facts else "（抽出できませんでした）"
             unknowns_text = "\n".join([f"- {x}" for x in unknowns]) if unknowns else "（なし）"
 
             # 2) 統合（討論の出力も考慮）
-            report_chain = self.report_prompt | self.model.with_structured_output(ReportContent)
-            content: ReportContent = report_chain.invoke(
-                {
-                    "article_title": title,
-                    "article_url": url,
-                    "extracted_facts": extracted_facts_text,
-                    "unknowns": unknowns_text,
-                    "optimistic_argument": self._fmt_argument(optimistic_argument),
-                    "pessimistic_argument": self._fmt_argument(pessimistic_argument),
-                    "critique": self._fmt_critique(critique),
-                    "optimistic_rebuttal": self._fmt_rebuttal(optimistic_rebuttal),
-                    "pessimistic_rebuttal": self._fmt_rebuttal(pessimistic_rebuttal),
-                    "evidence_mismatch_notes": self._evidence_mismatch_notes(article_text, optimistic_argument, pessimistic_argument),
-                }
-            )
+            content: ReportContent | None = None
+            try:
+                report_chain = self.report_prompt | self.model.with_structured_output(ReportContent)
+                content = report_chain.invoke(
+                    {
+                        "article_title": title,
+                        "article_url": url,
+                        "extracted_facts": extracted_facts_text,
+                        "unknowns": unknowns_text,
+                        "optimistic_argument": self._fmt_argument(optimistic_argument),
+                        "pessimistic_argument": self._fmt_argument(pessimistic_argument),
+                        "critique": self._fmt_critique(critique),
+                        "optimistic_rebuttal": self._fmt_rebuttal(optimistic_rebuttal),
+                        "pessimistic_rebuttal": self._fmt_rebuttal(pessimistic_rebuttal),
+                        "evidence_mismatch_notes": self._evidence_mismatch_notes(article_text, optimistic_argument, pessimistic_argument),
+                    }
+                )
+            except Exception as e:
+                logging.getLogger(__name__).exception("統合レポート生成エラー（テンプレで復旧）: %s", e)
+                content = None
 
             # critique_points はLLM任せにせず、入力から決定的に構成する（タグ/文字数/重複の安定化）
             points: list[str] = []
@@ -341,13 +359,23 @@ class ReporterAgent:
 
             critique_points = deduped[:12]
 
+            # summary / final_conclusion を取り出し（失敗時はテンプレ合成）
+            if content is not None:
+                summary = (content.summary or "").strip()
+                final_conclusion = (content.final_conclusion or "").strip()
+            else:
+                # テンプレ: 抽出事実+批評の要点で最小限のレポートを作る（案R1）
+                top_facts = extracted_facts[:3] if extracted_facts else quote_lines[:3]
+                facts_inline = " / ".join([x[:80] + ("…" if len(x) > 80 else "") for x in top_facts]) if top_facts else "（本文から具体情報を抽出できませんでした）"
+                summary = f"この記事は、次の点が本文から読み取れます: {facts_inline}"
+                final_conclusion = (
+                    "抽出できた事実を踏まえると、機会（政策・対応の前進/効果）とリスク（副作用・不確実性）の両面を分けて評価する必要があります。"
+                )
+
             # final_conclusion 末尾の不要記号を軽く正規化（モデルによって引用符が混入することがある）
-            final_conclusion = (content.final_conclusion or "").strip()
             final_conclusion = re.sub(r'[\"”]+\\}?\\s*$', "", final_conclusion).strip()
 
             # summaryが抽象的すぎる場合は、本文引用候補を使って最低限の具体性を付与する
-            summary = (content.summary or "").strip()
-            quote_lines = [ln.strip()[2:].strip() for ln in self._pick_article_quotes(body, limit=4).splitlines() if ln.strip().startswith("- ")]
             if quote_lines:
                 # 具体情報が少ない場合（数字/固有名詞/引用符が無い）に追記する
                 if (not re.search(r"\d", summary)) and (all(q[:20] not in summary for q in quote_lines[:2])):

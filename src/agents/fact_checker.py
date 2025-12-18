@@ -190,10 +190,23 @@ class FactCheckerAgent:
             if not isinstance(content, str):
                 content = str(content)
 
-            # JSON部分を抽出（前後に余計な文が付く場合に備える）
-            match = re.search(r"\{[\s\S]*\}", content)
-            json_text = match.group(0) if match else content
+            # --- JSON抽出の頑健化（案F1） ---
+            # - ```json ... ``` のフェンス除去
+            # - 複数JSONがある/前後に説明がある場合でも「最初にパースできたJSON」を採用
+            cleaned = self._strip_code_fences(content)
+            json_text = self._extract_first_json_object(cleaned) or cleaned
             data = json.loads(json_text)
+
+            # 欠落/型崩れに備えて最低限の形へ整形
+            if not isinstance(data, dict):
+                data = {}
+            bias_points = data.get("bias_points", [])
+            factual_errors = data.get("factual_errors", [])
+            if not isinstance(bias_points, list):
+                bias_points = []
+            if not isinstance(factual_errors, list):
+                factual_errors = []
+            data = {"bias_points": bias_points, "factual_errors": factual_errors}
 
             if hasattr(Critique, "model_validate"):
                 critique = Critique.model_validate(data)  # pydantic v2
@@ -212,3 +225,31 @@ class FactCheckerAgent:
                 factual_errors=[],
             )
 
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """
+        LLMが ```json ... ``` のようなフェンス付きで返した場合に除去する。
+        """
+        s = "" if text is None else str(text)
+        s = s.strip()
+        # 先頭・末尾のフェンスを軽く除去（中身に ``` が出るケースは稀なので単純化）
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*```$", "", s)
+        return s.strip()
+
+    @staticmethod
+    def _extract_first_json_object(text: str) -> str | None:
+        """
+        文字列内から「最初に現れるJSONオブジェクト（{...}）」を抜き出す。
+        - 非貪欲な正規表現で候補を拾い、最初にjson.loadsできたものを返す
+        """
+        s = "" if text is None else str(text)
+        # 非貪欲に候補を列挙
+        candidates = re.findall(r"\{[\s\S]*?\}", s)
+        for c in candidates:
+            try:
+                json.loads(c)
+                return c
+            except Exception:
+                continue
+        return None
