@@ -13,7 +13,9 @@ def main() -> int:
     failing = AlwaysFailChatModel()
 
     graph = create_graph(llm=failing, llm_fact_checker=failing)
-    result = graph.invoke({"topic": "テストトピック", "messages": [], "request_id": "smoke"})
+    # RSS設定が有効な環境ではキーワードがヒットせず早期終了(halt)する可能性があるため、
+    # URL入力（失敗しても article_text="エラー: ..." で後続フェーズが完走する経路）でスモークする。
+    result = graph.invoke({"topic": "http://example.com", "messages": [], "request_id": "smoke"})
 
     required_keys = [
         "optimistic_argument",

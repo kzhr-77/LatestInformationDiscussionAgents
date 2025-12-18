@@ -54,6 +54,7 @@ def get_llm(
     repeat_penalty: float | None = None,
     repeat_last_n: int | None = None,
     stop: list[str] | None = None,
+    verify_model: bool = True,
 ):
     """
     Ollamaを使用してLLMを取得する
@@ -74,15 +75,16 @@ def get_llm(
         ConnectionError: Ollamaサービスに接続できない場合
         ValueError: モデルが存在しない場合
     """
-    # /api/tags を1回だけ取得して、接続確認とモデル存在確認をまとめて行う
-    tags = _fetch_ollama_tags(base_url)
-    models = [m.get("name") for m in tags.get("models", []) if isinstance(m, dict) and m.get("name")]
-    if model_name not in models:
-        raise ValueError(
-            f"モデル '{model_name}' が見つかりません。\n"
-            f"利用可能なモデル: {', '.join(models) if models else 'なし'}\n"
-            f"モデルをダウンロードするには: `ollama pull {model_name}`"
-        )
+    if verify_model:
+        # /api/tags を1回だけ取得して、接続確認とモデル存在確認をまとめて行う
+        tags = _fetch_ollama_tags(base_url)
+        models = [m.get("name") for m in tags.get("models", []) if isinstance(m, dict) and m.get("name")]
+        if model_name not in models:
+            raise ValueError(
+                f"モデル '{model_name}' が見つかりません。\n"
+                f"利用可能なモデル: {', '.join(models) if models else 'なし'}\n"
+                f"モデルをダウンロードするには: `ollama pull {model_name}`"
+            )
     
     return ChatOllama(
         model=model_name,

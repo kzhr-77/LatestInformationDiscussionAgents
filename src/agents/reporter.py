@@ -23,23 +23,56 @@ class ReporterAgent:
         self._init_prompts()
 
     def _init_prompts(self) -> None:
+        # 1) 事実抽出（本文から「確実に言える点」だけ抽出）
+        self.facts_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """あなたはレポートエージェントです。記事本文から「確実に言える事実」を抽出してください。
+
+重要ルール:
+- 出力は**必ず日本語**
+- 記事本文に無い事実を作らない（推測は禁止）
+- できるだけ数字/固有名詞/決定事項を含める
+
+出力は次の構造（ExtractedFacts）に合わせること:
+- key_facts: 箇条書き（5〜10個、各200文字以内、重複禁止）
+- unknowns: 不明点/本文から断定できない点（2〜6個）""",
+                ),
+                (
+                    "human",
+                    """記事タイトル:
+{article_title}
+
+ソースURL:
+{article_url}
+
+記事本文（抜粋）:
+{article_text}
+
+本文からの引用候補（抜粋）:
+{article_quotes}
+
+上記に基づき、事実抽出をしてください。""",
+                ),
+            ]
+        )
+
+        # 2) 統合（抽出した事実 + 各エージェント出力を統合）
         self.report_prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    """あなたはレポートエージェントです。以下の情報を統合し、バイアスの少ない多角的な最終結論と要約を作成してください。
+                    """あなたはレポートエージェントです。抽出済みの事実と討論の出力を統合し、最終要約と統合結論を作成してください。
 
 重要ルール:
-- 出力は**必ず日本語**にする
+- 出力は**必ず日本語**
 - 記事本文に無い事実を作らない（不明な点は「不明」と書く）
-- ファクトチェッカーの指摘（bias/factual）を優先し、誇張を避ける
-- 引用（evidence）が記事本文に見当たらない場合は「引用根拠が本文に見当たらない可能性」を明示する
-- 結論は「機会」と「リスク」を両方扱い、単なる折衷案にならないように要点を整理する
-- 一般論（「多角的に検討が必要」「慎重な議論が重要」等）だけで終わらせない。本文の具体情報に触れること。
-- 記事内容の根拠として、下の「本文からの引用候補（抜粋）」を優先して参照する（そこに無い内容は断定しない）。
+- 一般論だけで終わらせない。下の「抽出済み事実」に含まれる具体情報に触れること
+- 結論は「機会」と「リスク」を両方扱う
 
 出力は次の構造（ReportContent）に合わせること:
-- summary: 記事内容の要約（2〜5文）。**少なくとも2つ**は具体情報（数字/固有名詞/出来事/決定事項）に触れる。
+- summary: 記事内容の要約（2〜5文）。少なくとも2つは具体情報（数字/固有名詞/決定事項）に触れる。
 - final_conclusion: 議論を踏まえた統合結論（2〜6文）。最後に必ず「確実度が高い点: ...」「不確かな点: ...」を1文ずつ含める。""",
                 ),
                 (
@@ -50,11 +83,11 @@ class ReporterAgent:
 ソースURL:
 {article_url}
 
-元の記事（抜粋）:
-{article_text}
+抽出済み事実:
+{extracted_facts}
 
-本文からの引用候補（抜粋）:
-{article_quotes}
+不明点（本文から断定できない点）:
+{unknowns}
 
 楽観的アナリストの主張:
 {optimistic_argument}
@@ -231,13 +264,31 @@ class ReporterAgent:
         """
         try:
             title, url, body = self._extract_article_header(article_text, fallback_url=article_url)
-            chain = self.report_prompt | self.model.with_structured_output(ReportContent)
-            content: ReportContent = chain.invoke(
+
+            # 1) 事実抽出（本文ベース）
+            facts_chain = self.facts_prompt | self.model.with_structured_output(ExtractedFacts)
+            extracted: ExtractedFacts = facts_chain.invoke(
                 {
                     "article_title": title,
                     "article_url": url,
                     "article_text": self._truncate(body, 8000),
                     "article_quotes": self._pick_article_quotes(body, limit=6),
+                }
+            )
+
+            extracted_facts = list(getattr(extracted, "key_facts", []) or [])
+            unknowns = list(getattr(extracted, "unknowns", []) or [])
+            extracted_facts_text = "\n".join([f"- {x}" for x in extracted_facts]) if extracted_facts else "（抽出できませんでした）"
+            unknowns_text = "\n".join([f"- {x}" for x in unknowns]) if unknowns else "（なし）"
+
+            # 2) 統合（討論の出力も考慮）
+            report_chain = self.report_prompt | self.model.with_structured_output(ReportContent)
+            content: ReportContent = report_chain.invoke(
+                {
+                    "article_title": title,
+                    "article_url": url,
+                    "extracted_facts": extracted_facts_text,
+                    "unknowns": unknowns_text,
                     "optimistic_argument": self._fmt_argument(optimistic_argument),
                     "pessimistic_argument": self._fmt_argument(pessimistic_argument),
                     "critique": self._fmt_critique(critique),
@@ -346,3 +397,8 @@ class ReporterAgent:
 class ReportContent(BaseModel):
     summary: str = Field(description="記事内容の要約")
     final_conclusion: str = Field(description="統合結論")
+
+
+class ExtractedFacts(BaseModel):
+    key_facts: list[str] = Field(default_factory=list, description="本文から抽出した事実")
+    unknowns: list[str] = Field(default_factory=list, description="本文から断定できない点")

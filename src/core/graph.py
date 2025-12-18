@@ -30,9 +30,9 @@ def create_graph(
 
     # 通常はOllamaでLLMを生成するが、テスト/スモーク用途では外部から注入できるようにする
     if llm is None:
-        llm = get_llm(model_name, **get_profile("analysis").to_kwargs())
+        llm = get_llm(model_name, verify_model=False, **get_profile("analysis").to_kwargs())
     if llm_fact_checker is None:
-        llm_fact_checker = get_llm(model_name, **get_profile("fact_check").to_kwargs())
+        llm_fact_checker = get_llm(model_name, verify_model=False, **get_profile("fact_check").to_kwargs())
     
     # Initialize agents
     researcher = researcher_agent or ResearcherAgent(llm)

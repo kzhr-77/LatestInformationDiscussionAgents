@@ -83,36 +83,13 @@ class FactCheckerAgent:
         if not article_text or not article_text.strip():
             raise ValueError("記事テキストが空です。")
         
-        try:
-            # プロンプトチェーンを作成
-            # 温度を低めに設定したモデルを使用（事実検証のため）
-            chain = self.validate_prompt | self.model.with_structured_output(Critique)
-            
-            # 証拠を整形
-            optimistic_evidence_str = "\n".join([f"- {ev}" for ev in optimistic_argument.evidence])
-            pessimistic_evidence_str = "\n".join([f"- {ev}" for ev in pessimistic_argument.evidence])
-            
-            # LLMを呼び出して構造化出力を取得
-            result = chain.invoke({
-                # 長文は先頭+末尾を残して文脈を保持（単純先頭切り捨てより誤判定が減る）
-                "article_text": self._truncate_article_text(article_text),
-                "optimistic_conclusion": optimistic_argument.conclusion,
-                "optimistic_evidence": optimistic_evidence_str if optimistic_evidence_str else "（証拠なし）",
-                "pessimistic_conclusion": pessimistic_argument.conclusion,
-                "pessimistic_evidence": pessimistic_evidence_str if pessimistic_evidence_str else "（証拠なし）"
-            })
-            
-            return self._normalize_critique(result)
-            
-        except Exception as e:
-            # 構造化出力が崩れた場合は、JSON出力を強制して復旧を試みる
-            logging.getLogger(__name__).exception("ファクトチェックエラー（structured_output）: %s", e)
-            return self._fallback_validate_as_json(
-                optimistic_argument=optimistic_argument,
-                pessimistic_argument=pessimistic_argument,
-                article_text=article_text,
-                original_error=e,
-            )
+        # 案A: structured_output を使わず、常に JSON 文字列出力 → パースで復元する
+        return self._fallback_validate_as_json(
+            optimistic_argument=optimistic_argument,
+            pessimistic_argument=pessimistic_argument,
+            article_text=article_text,
+            original_error=RuntimeError("CritiqueはJSON経由で復元（structured_output不使用）"),
+        )
 
     def _normalize_critique(self, critique: Critique) -> Critique:
         """

@@ -145,11 +145,28 @@ class ResearcherAgent:
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             response.encoding = response.apparent_encoding
-            
-            soup = BeautifulSoup(response.text, 'lxml')
+
+            raw_html = response.text
+
+            # 可能なら readability で本文抽出（別記事一覧/ナビ混入を抑える）
+            extracted_html = None
+            extracted_title = ""
+            try:
+                from readability import Document  # readability-lxml
+
+                doc = Document(raw_html)
+                extracted_html = doc.summary(html_partial=True)
+                extracted_title = (doc.short_title() or "").strip()
+            except Exception:
+                extracted_html = None
+                extracted_title = ""
+
+            soup = BeautifulSoup(extracted_html or raw_html, 'lxml')
 
             # タイトル抽出（後段のレポートで利用）
             def extract_title() -> str:
+                if extracted_title:
+                    return extracted_title
                 # 1) og:title / twitter:title / meta name=title
                 try:
                     for sel in [
@@ -201,7 +218,8 @@ class ResearcherAgent:
             def extract_from(container) -> str:
                 # 段落中心に拾う（body全文のメニュー等を避ける）
                 parts = []
-                for el in container.find_all(["h1", "h2", "h3", "p", "li"]):
+                # li は「関連記事/一覧」を拾いやすいので除外（本文混入対策）
+                for el in container.find_all(["h1", "h2", "h3", "p"]):
                     t = el.get_text(separator=" ", strip=True)
                     if not t:
                         continue
