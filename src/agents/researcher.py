@@ -92,7 +92,8 @@ class ResearcherAgent:
                 continue
             seen_urls.add(url)
             try:
-                article = self._fetch_from_url(url)
+                # RSS経由は上で[source]/[title]を付与するので、二重ヘッダを避ける
+                article = self._fetch_from_url(url, include_header=False)
                 header = f"[source] {url}\n[title] {it.title}".strip()
                 texts.append(header + "\n\n" + article)
             except Exception as e:
@@ -124,7 +125,7 @@ class ResearcherAgent:
         except Exception:
             return False
     
-    def _fetch_from_url(self, url: str) -> str:
+    def _fetch_from_url(self, url: str, include_header: bool = True) -> str:
         """
         URLから記事テキストを取得
         
@@ -146,6 +147,47 @@ class ResearcherAgent:
             response.encoding = response.apparent_encoding
             
             soup = BeautifulSoup(response.text, 'lxml')
+
+            # タイトル抽出（後段のレポートで利用）
+            def extract_title() -> str:
+                # 1) og:title / twitter:title / meta name=title
+                try:
+                    for sel in [
+                        ("meta", {"property": "og:title"}),
+                        ("meta", {"name": "twitter:title"}),
+                        ("meta", {"name": "title"}),
+                    ]:
+                        tag = soup.find(sel[0], attrs=sel[1])
+                        if tag and tag.get("content"):
+                            t = str(tag.get("content")).strip()
+                            if t:
+                                return t
+                except Exception:
+                    pass
+
+                # 2) h1（article→main→body優先）
+                try:
+                    for container in [soup.find("article"), soup.find("main"), soup.find("body"), soup]:
+                        if not container:
+                            continue
+                        h1 = container.find("h1")
+                        if h1:
+                            t = h1.get_text(separator=" ", strip=True)
+                            if t:
+                                return t
+                except Exception:
+                    pass
+
+                # 3) <title>
+                try:
+                    if soup.title and soup.title.string:
+                        t = str(soup.title.string).strip()
+                        if t:
+                            return t
+                except Exception:
+                    pass
+
+                return ""
 
             # まず不要要素を削除（ノイズ混入を減らす）
             for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg']):
@@ -200,7 +242,15 @@ class ResearcherAgent:
             
             if len(text) < 100:
                 raise ValueError("記事テキストが短すぎます。正しいURLか確認してください。")
-            
+
+            if include_header:
+                title = extract_title()
+                header_parts = [f"[source] {url}"]
+                if title:
+                    header_parts.append(f"[title] {title}")
+                header = "\n".join(header_parts).strip()
+                return header + "\n\n" + text
+
             return text
             
         except requests.exceptions.RequestException as e:
@@ -245,7 +295,7 @@ class ResearcherAgent:
                 raise ValueError("検索結果に記事内容が見つかりませんでした。")
             
             # URLから記事を取得
-            return self._fetch_from_url(url)
+            return self._fetch_from_url(url, include_header=True)
             
         except ValueError:
             raise
@@ -273,7 +323,7 @@ class ResearcherAgent:
         # URLかキーワードかを判定
         if self._is_url(topic):
             # URLの場合: 直接コンテンツを取得
-            return self._fetch_from_url(topic)
+            return self._fetch_from_url(topic, include_header=True)
         else:
             # キーワードの場合: RSS許可リスト方式（安全重視）を優先
             try:

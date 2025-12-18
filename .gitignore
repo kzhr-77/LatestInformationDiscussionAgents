@@ -24,6 +24,7 @@ venv/
 # Log files
 *.log
 *.log.*
+logs/*.json
 
 # Temporary files
 *.tmp

@@ -153,6 +153,9 @@ if st.button("分析開始"):
             final_report = result.get("final_report")
             if final_report:
                 if hasattr(final_report, 'final_conclusion'):
+                    if getattr(final_report, "article_info", ""):
+                        st.write("**記事情報**:")
+                        st.write(final_report.article_info)
                     st.write(f"**最終結論**: {final_report.final_conclusion}")
                     if final_report.critique_points:
                         st.write("**批評ポイント**:")

@@ -179,29 +179,26 @@ def create_graph(
             # 既にfinal_reportがある場合は再実行を避ける（分岐/合流の実装差異に備える）
             if state.get("final_report") is not None:
                 return {}
-            report = reporter.create_report(state.get("messages", []))
-            # Mocking return
-            # TODO: 実際の実装では、LLMからFinalReport型を直接取得する
-            # 現在はモックなので、最小限の構造を返す
+            if state.get("halt"):
+                return {}
+
+            article_text = state.get("article_text") or ""
             optimistic_arg = state.get("optimistic_argument") or Argument(conclusion="", evidence=[])
             pessimistic_arg = state.get("pessimistic_argument") or Argument(conclusion="", evidence=[])
-            
-            if isinstance(report, str):
-                return {"final_report": FinalReport(
-                    article_info="",
-                    optimistic_view=optimistic_arg,
-                    pessimistic_view=pessimistic_arg,
-                    critique_points=[],
-                    final_conclusion=report
-                )}
-            else:
-                return {"final_report": FinalReport(
-                    article_info=report.get("article_info", "") if isinstance(report, dict) else "",
-                    optimistic_view=optimistic_arg,
-                    pessimistic_view=pessimistic_arg,
-                    critique_points=report.get("critique_points", []) if isinstance(report, dict) else [],
-                    final_conclusion=report.get("final_conclusion", str(report)) if isinstance(report, dict) else str(report)
-                )}
+            critique = state.get("critique") or Critique(bias_points=[], factual_errors=[])
+            optimistic_rebuttal = state.get("optimistic_rebuttal") or Rebuttal(counter_points=[], strengthened_evidence=[])
+            pessimistic_rebuttal = state.get("pessimistic_rebuttal") or Rebuttal(counter_points=[], strengthened_evidence=[])
+
+            final_report = reporter.create_report(
+                article_text=_truncate_for_prompt(article_text, 8000),
+                optimistic_argument=optimistic_arg,
+                pessimistic_argument=pessimistic_arg,
+                critique=critique,
+                optimistic_rebuttal=optimistic_rebuttal,
+                pessimistic_rebuttal=pessimistic_rebuttal,
+                article_url=state.get("topic"),
+            )
+            return {"final_report": final_report}
         except Exception as e:
             logger.exception("[%s] レポート生成エラー: %s", rid, e)
             optimistic_arg = state.get("optimistic_argument") or Argument(conclusion="", evidence=[])
