@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 import uuid
 import logging
+import re
 
 # Adjust path to import src
 # Note: Streamlitアプリは実行時に異なるディレクトリから起動される可能性があるため、
@@ -22,6 +23,19 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Discussion News Analysis", layout="wide")
 
 st.title("討論型ニュース分析システム")
+def _classify_ollama_error_message(msg: str) -> str:
+    """
+    `verify_model=False` のとき、モデル未取得/接続不良が実行時に出るため、UIでメッセージを整形する。
+    返り値: "model_not_found" | "connection" | "other"
+    """
+    s = (msg or "").lower()
+    if any(k in s for k in ["connection refused", "connecterror", "failed to connect", "timed out", "timeout", "11434"]):
+        return "connection"
+    if any(k in s for k in ["model", "not found", "no such file", "pull"]):
+        # "model not found" 系を広めに拾う
+        return "model_not_found"
+    return "other"
+
 
 # OpenAI用（コメントアウト）
 # api_key = st.sidebar.text_input("OpenAI API Key", type="password")
@@ -178,7 +192,23 @@ if st.button("分析開始"):
                    "- ターミナルで `ollama serve` を実行するか、Ollamaアプリを起動\n"
                    "- ファイアウォールがブロックしていないか確認")
         except Exception as e:
-            st.error(f"**予期しないエラーが発生しました**: {e}")
+            # 実行時に出るOllama系エラーを分かりやすく整形
+            msg = str(e)
+            kind = _classify_ollama_error_message(msg)
+            if kind == "connection":
+                st.error("**接続エラー**: Ollamaに接続できませんでした。")
+                st.info("💡 **対処方法**:\n"
+                        "- Ollamaが起動しているか確認（アプリ起動 or `ollama serve`）\n"
+                        "- 既定ポート(11434)がブロックされていないか確認\n"
+                        "- しばらく待って再実行（起動直後はタイムアウトすることがあります）")
+            elif kind == "model_not_found":
+                st.error(f"**モデルエラー**: モデル `{model_name}` が見つからない可能性があります。")
+                st.info("💡 **対処方法**:\n"
+                        "- `ollama list` でモデル一覧を確認\n"
+                        f"- `ollama pull {model_name}` でモデルを取得\n"
+                        "- UIの「使用するモデル」が実際のモデル名と一致しているか確認")
+            else:
+                st.error(f"**予期しないエラーが発生しました**: {e}")
             with st.expander("詳細なエラー情報"):
                 st.exception(e)  # 詳細なエラー情報を表示
 

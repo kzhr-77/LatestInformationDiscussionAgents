@@ -194,7 +194,11 @@ class FactCheckerAgent:
             # - ```json ... ``` のフェンス除去
             # - 複数JSONがある/前後に説明がある場合でも「最初にパースできたJSON」を採用
             cleaned = self._strip_code_fences(content)
-            json_text = self._extract_first_json_object(cleaned) or cleaned
+            json_text = (
+                self._extract_first_json_object_stream(cleaned)
+                or self._extract_first_json_object(cleaned)
+                or cleaned
+            )
             data = json.loads(json_text)
 
             # 欠落/型崩れに備えて最低限の形へ整形
@@ -216,6 +220,13 @@ class FactCheckerAgent:
 
         except Exception as e:
             logging.getLogger(__name__).exception("ファクトチェックフォールバックエラー: %s", e)
+            # 観測性: モデル出力の断片（記事本文ではなく、LLM出力側のみ）を短く残す
+            try:
+                snippet = self._safe_snippet(locals().get("content", ""), 480)
+                if snippet:
+                    logging.getLogger(__name__).warning("ファクトチェック復元失敗: model_output_snippet=%s", snippet)
+            except Exception:
+                pass
             return Critique(
                 bias_points=[
                     "検証に失敗しました（出力の構造化に失敗）。",
@@ -253,3 +264,70 @@ class FactCheckerAgent:
             except Exception:
                 continue
         return None
+
+    @staticmethod
+    def _extract_first_json_object_stream(text: str) -> str | None:
+        """
+        文字列から最初のJSONオブジェクト（{...}）を括弧カウントで抽出する。
+        - 正規表現より堅牢（ネストした{}や文字列内の{}を考慮）
+        - 返すのは「最初に現れる開始{」から対応する閉じ}まで
+        """
+        s = "" if text is None else str(text)
+        start = s.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_str = False
+        esc = False
+
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = False
+                continue
+
+            # 文字列の開始
+            if ch == '"':
+                in_str = True
+                continue
+
+            if ch == "{":
+                depth += 1
+                continue
+            if ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = s[start : i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except Exception:
+                        # 開始がたまたまJSONでない場合は次の{を探す
+                        nxt = s.find("{", start + 1)
+                        if nxt < 0:
+                            return None
+                        start = nxt
+                        depth = 0
+                        in_str = False
+                        esc = False
+                        # i を start-1 に戻すのが理想だが、簡易にループを続けるため再帰で処理
+                        return FactCheckerAgent._extract_first_json_object_stream(s[start:])
+        return None
+
+    @staticmethod
+    def _safe_snippet(text: str, max_chars: int = 480) -> str:
+        s = "" if text is None else str(text)
+        s = re.sub(r"\s+", " ", s).strip()
+        if not s:
+            return ""
+        if len(s) <= max_chars:
+            return s
+        return s[:max_chars].rstrip() + "…"

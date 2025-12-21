@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import json
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -55,6 +56,16 @@ class ReporterAgent:
 {article_quotes}
 
 上記に基づき、事実抽出をしてください。""",
+                ),
+            ]
+        )
+        # facts: JSON文字列フォールバック（structured_outputが使えない/壊れるモデル向け）
+        self.facts_prompt_json = ChatPromptTemplate.from_messages(
+            [
+                ("system", "あなたはレポートエージェントです。必ずJSONのみを出力してください。"),
+                (
+                    "human",
+                    """次のJSONのみを返してください。\n\nJSONスキーマ:\n{{\n  \"key_facts\": [\"...\"] ,\n  \"unknowns\": [\"...\"]\n}}\n\n記事タイトル:\n{article_title}\n\nソースURL:\n{article_url}\n\n記事本文（抜粋）:\n{article_text}\n\n本文からの引用候補（抜粋）:\n{article_quotes}\n""",
                 ),
             ]
         )
@@ -113,6 +124,16 @@ class ReporterAgent:
 {evidence_mismatch_notes}
 
 要約（summary）と統合結論（final_conclusion）を生成してください。""",
+                ),
+            ]
+        )
+        # report: JSON文字列フォールバック
+        self.report_prompt_json = ChatPromptTemplate.from_messages(
+            [
+                ("system", "あなたはレポートエージェントです。必ずJSONのみを出力してください。"),
+                (
+                    "human",
+                    """次のJSONのみを返してください。\n\nJSONスキーマ:\n{{\n  \"summary\": \"...\" ,\n  \"final_conclusion\": \"...\"\n}}\n\n記事タイトル:\n{article_title}\n\nソースURL:\n{article_url}\n\n抽出済み事実:\n{extracted_facts}\n\n不明点:\n{unknowns}\n\n本文引用候補（抜粋）:\n{article_quotes}\n\n楽観的アナリストの主張:\n{optimistic_argument}\n\n悲観的アナリストの主張:\n{pessimistic_argument}\n\nファクトチェッカーの批評:\n{critique}\n\n楽観的アナリストの反論:\n{optimistic_rebuttal}\n\n悲観的アナリストの反論:\n{pessimistic_rebuttal}\n\n引用根拠チェック:\n{evidence_mismatch_notes}\n""",
                 ),
             ]
         )
@@ -264,6 +285,78 @@ class ReporterAgent:
             return "（本文から抽出できませんでした）"
         return "\n".join([f"- {x}" for x in picked])
 
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        s = "" if text is None else str(text)
+        s = s.strip()
+        s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s*```$", "", s)
+        return s.strip()
+
+    @staticmethod
+    def _extract_first_json_object_stream(text: str) -> str | None:
+        s = "" if text is None else str(text)
+        start = s.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_str = False
+        esc = False
+
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":
+                    esc = True
+                    continue
+                if ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                depth += 1
+                continue
+            if ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = s[start : i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except Exception:
+                        return None
+        return None
+
+    @staticmethod
+    def _facts_looks_weak(extracted_facts: list[str], quote_lines: list[str]) -> bool:
+        facts = [("" if x is None else str(x)).strip() for x in (extracted_facts or [])]
+        facts = [x for x in facts if x]
+        if len(facts) < 3 and quote_lines:
+            return True
+
+        # 具体性のシグナル（数字/単位）
+        specific = 0
+        for f in facts[:8]:
+            if re.search(r"\d", f) or any(tok in f for tok in ["年", "月", "日", "円", "%", "％", "兆", "億", "万人", "社", "件"]):
+                specific += 1
+        if specific == 0 and quote_lines:
+            return True
+
+        # 一般論が多い（ざっくり）
+        generic_tokens = ["一般的に", "重要", "必要", "求められる", "注目", "議論", "影響", "可能性", "慎重"]
+        genericish = sum(1 for f in facts[:8] if any(t in f for t in generic_tokens))
+        if genericish >= 4 and quote_lines:
+            return True
+
+        return False
+
     def create_report(
         self,
         article_text: str,
@@ -301,12 +394,37 @@ class ReporterAgent:
                 unknowns = list(getattr(extracted, "unknowns", []) or [])
             except Exception as e:
                 logging.getLogger(__name__).exception("事実抽出エラー（フォールバックへ切替）: %s", e)
-                # 機械抽出: 引用候補をそのまま事実候補として利用
-                extracted_facts = quote_lines[:8] if quote_lines else []
-                unknowns = [
-                    "記事本文だけでは影響評価や因果の断定が難しい点がある可能性。",
-                    "アナリストの主張の一部は本文の直接引用ではない可能性。",
-                ]
+                # 1-b) JSON文字列フォールバック（structured_output未対応/不安定なモデル向け）
+                try:
+                    raw = (self.facts_prompt_json | self.model).invoke(
+                        {
+                            "article_title": title,
+                            "article_url": url,
+                            "article_text": self._truncate(body, 8000),
+                            "article_quotes": "\n".join([f"- {x}" for x in quote_lines]) if quote_lines else "（抽出できませんでした）",
+                        }
+                    )
+                    content = getattr(raw, "content", raw)
+                    if not isinstance(content, str):
+                        content = str(content)
+                    cleaned = self._strip_code_fences(content)
+                    json_text = self._extract_first_json_object_stream(cleaned) or cleaned
+                    data = json.loads(json_text)
+                    if not isinstance(data, dict):
+                        data = {}
+                    extracted_facts = list(data.get("key_facts", []) or [])
+                    unknowns = list(data.get("unknowns", []) or [])
+                except Exception:
+                    # 機械抽出: 引用候補をそのまま事実候補として利用
+                    extracted_facts = quote_lines[:8] if quote_lines else []
+                    unknowns = [
+                        "記事本文だけでは影響評価や因果の断定が難しい点がある可能性。",
+                        "アナリストの主張の一部は本文の直接引用ではない可能性。",
+                    ]
+
+            # facts品質が弱い場合は、引用候補へ寄せる（モデルの一般論化対策）
+            if self._facts_looks_weak(extracted_facts, quote_lines):
+                extracted_facts = quote_lines[:8] if quote_lines else extracted_facts
 
             extracted_facts_text = "\n".join([f"- {x}" for x in extracted_facts]) if extracted_facts else "（抽出できませんでした）"
             unknowns_text = "\n".join([f"- {x}" for x in unknowns]) if unknowns else "（なし）"
@@ -332,7 +450,36 @@ class ReporterAgent:
                 )
             except Exception as e:
                 logging.getLogger(__name__).exception("統合レポート生成エラー（テンプレで復旧）: %s", e)
-                content = None
+                # 2-b) JSON文字列フォールバック
+                try:
+                    raw = (self.report_prompt_json | self.model).invoke(
+                        {
+                            "article_title": title,
+                            "article_url": url,
+                            "extracted_facts": extracted_facts_text,
+                            "unknowns": unknowns_text,
+                            "article_quotes": "\n".join([f"- {x}" for x in quote_lines]) if quote_lines else "（抽出できませんでした）",
+                            "optimistic_argument": self._fmt_argument(optimistic_argument),
+                            "pessimistic_argument": self._fmt_argument(pessimistic_argument),
+                            "critique": self._fmt_critique(critique),
+                            "optimistic_rebuttal": self._fmt_rebuttal(optimistic_rebuttal),
+                            "pessimistic_rebuttal": self._fmt_rebuttal(pessimistic_rebuttal),
+                            "evidence_mismatch_notes": self._evidence_mismatch_notes(article_text, optimistic_argument, pessimistic_argument),
+                        }
+                    )
+                    content_s = getattr(raw, "content", raw)
+                    if not isinstance(content_s, str):
+                        content_s = str(content_s)
+                    cleaned = self._strip_code_fences(content_s)
+                    json_text = self._extract_first_json_object_stream(cleaned) or cleaned
+                    data = json.loads(json_text)
+                    if not isinstance(data, dict):
+                        data = {}
+                    summary = str(data.get("summary", "") or "")
+                    final_conclusion = str(data.get("final_conclusion", "") or "")
+                    content = ReportContent(summary=summary, final_conclusion=final_conclusion)
+                except Exception:
+                    content = None
 
             # critique_points はLLM任せにせず、入力から決定的に構成する（タグ/文字数/重複の安定化）
             points: list[str] = []

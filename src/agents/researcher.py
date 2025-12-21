@@ -161,6 +161,18 @@ class ResearcherAgent:
                 extracted_html = None
                 extracted_title = ""
 
+            # readability が短すぎる/空の場合は、生HTMLにフォールバック（サイトによっては本文が落ちる）
+            def _html_text_len(html: str | None) -> int:
+                if not html:
+                    return 0
+                try:
+                    return len(BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True))
+                except Exception:
+                    return 0
+
+            if extracted_html and _html_text_len(extracted_html) < 200:
+                extracted_html = None
+
             soup = BeautifulSoup(extracted_html or raw_html, 'lxml')
 
             # タイトル抽出（後段のレポートで利用）
@@ -244,6 +256,29 @@ class ResearcherAgent:
             if len(text) < 200:
                 body = soup.find('body') or soup
                 text = extract_from(body) or body.get_text(separator='\n', strip=True)
+
+            # readability利用時に短文になりやすいサイト向け: 生HTMLで再抽出を試す
+            if extracted_html and len(text) < 200:
+                try:
+                    soup2 = BeautifulSoup(raw_html, "lxml")
+                    for tag in soup2(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg']):
+                        tag.decompose()
+                    text2 = ""
+                    article2 = soup2.find("article")
+                    if article2:
+                        text2 = extract_from(article2) or article2.get_text(separator="\n", strip=True)
+                    if len(text2) < 200:
+                        main2 = soup2.find("main")
+                        if main2:
+                            text2 = extract_from(main2) or main2.get_text(separator="\n", strip=True)
+                    if len(text2) < 200:
+                        body2 = soup2.find("body") or soup2
+                        text2 = extract_from(body2) or body2.get_text(separator="\n", strip=True)
+                    if len(text2) > len(text):
+                        soup = soup2
+                        text = text2
+                except Exception:
+                    pass
             
             # テキストを整形（空行を削除、長すぎる行を分割）
             lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -258,7 +293,7 @@ class ResearcherAgent:
             lines = deduped
             text = '\n'.join(lines)
             
-            if len(text) < 100:
+            if len(text) < 120:
                 raise ValueError("記事テキストが短すぎます。正しいURLか確認してください。")
 
             if include_header:
