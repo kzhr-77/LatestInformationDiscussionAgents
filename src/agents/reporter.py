@@ -34,6 +34,7 @@ class ReporterAgent:
 - 出力は**必ず日本語**
 - 記事本文に無い事実を作らない（推測は禁止）
 - できるだけ数字/固有名詞/決定事項を含める
+- 可能なら「本文からの引用候補（抜粋）」に含まれる表現を短く含める（根拠の手がかり）
 
 出力は次の構造（ExtractedFacts）に合わせること:
 - key_facts: 箇条書き（5〜10個、各200文字以内、重複禁止）
@@ -68,7 +69,8 @@ class ReporterAgent:
 重要ルール:
 - 出力は**必ず日本語**
 - 記事本文に無い事実を作らない（不明な点は「不明」と書く）
-- 一般論だけで終わらせない。下の「抽出済み事実」に含まれる具体情報に触れること
+- 一般論だけで終わらせない。下の「抽出済み事実」または「本文引用候補」に含まれる具体情報に必ず触れること
+- 要約/結論の中で、少なくとも2点は「抽出済み事実」の箇条書き内容（数字/固有名詞/決定事項）を根拠として含めること
 - 結論は「機会」と「リスク」を両方扱う
 
 出力は次の構造（ReportContent）に合わせること:
@@ -88,6 +90,9 @@ class ReporterAgent:
 
 不明点（本文から断定できない点）:
 {unknowns}
+
+本文引用候補（抜粋）:
+{article_quotes}
 
 楽観的アナリストの主張:
 {optimistic_argument}
@@ -220,8 +225,20 @@ class ReporterAgent:
         - 長すぎる/短すぎる行は除外
         - 数字/日付/単位がある行を優先
         """
-        lines = [re.sub(r"\s+", " ", (ln or "")).strip() for ln in (article_body or "").splitlines()]
+        body = (article_body or "").strip()
+        # まずは改行ベース（見出し/箇条書きがあるケースに強い）
+        lines = [re.sub(r"\s+", " ", (ln or "")).strip() for ln in body.splitlines()]
         lines = [ln for ln in lines if 20 <= len(ln) <= 180]
+
+        # 改行が少ない記事は1行が長くなりやすいので、文分割を追加（軽量な日本語句点ベース）
+        if len(lines) < max(3, limit // 2) and len(body) > 200:
+            # 「。！？？」でざっくり区切る（句点を残す）
+            parts = re.split(r"(?<=[。！？\?])", re.sub(r"\s+", " ", body))
+            sents = [p.strip() for p in parts if p and p.strip()]
+            sents = [s for s in sents if 20 <= len(s) <= 180]
+            lines.extend(sents)
+            # 再度長さフィルタ（念のため）
+            lines = [ln for ln in lines if 20 <= len(ln) <= 180]
         # 重複除去（先勝ち）
         uniq: list[str] = []
         seen: set[str] = set()
@@ -304,6 +321,7 @@ class ReporterAgent:
                         "article_url": url,
                         "extracted_facts": extracted_facts_text,
                         "unknowns": unknowns_text,
+                        "article_quotes": "\n".join([f"- {x}" for x in quote_lines]) if quote_lines else "（抽出できませんでした）",
                         "optimistic_argument": self._fmt_argument(optimistic_argument),
                         "pessimistic_argument": self._fmt_argument(pessimistic_argument),
                         "critique": self._fmt_critique(critique),
@@ -377,8 +395,10 @@ class ReporterAgent:
 
             # summaryが抽象的すぎる場合は、本文引用候補を使って最低限の具体性を付与する
             if quote_lines:
-                # 具体情報が少ない場合（数字/固有名詞/引用符が無い）に追記する
-                if (not re.search(r"\d", summary)) and (all(q[:20] not in summary for q in quote_lines[:2])):
+                # 具体情報が少ない場合（数字が無い/引用断片が入っていない/抽象語が多い）に追記する
+                genericish = any(tok in summary for tok in ["一般的に", "重要", "必要", "求められる", "注目", "議論", "影響"])
+                lacks_quote_anchor = all((q[:20] not in summary) for q in quote_lines[:2])
+                if (not re.search(r"\d", summary)) and lacks_quote_anchor and genericish:
                     q1 = quote_lines[0]
                     q2 = quote_lines[1] if len(quote_lines) > 1 else ""
                     q1 = q1[:80] + ("…" if len(q1) > 80 else "")
