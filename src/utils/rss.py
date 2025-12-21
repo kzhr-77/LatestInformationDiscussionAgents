@@ -8,6 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 
 import requests
+from src.utils.security import fetch_url_bytes, validate_outbound_url, UrlValidationError
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,12 @@ def load_rss_feed_urls(
     RSS/AtomフィードURLの許可リストを読み込む。
     優先順位: 環境変数 -> 設定ファイル
     """
-    env_val = (os.getenv(env_var) or "").strip()
+    # 本番では環境変数注入を避けるため、ファイルのみ使用する設定を推奨（security_spec.md）
+    file_only = (os.getenv("RSS_FEEDS_FILE_ONLY") or "").strip() in ("1", "true", "True", "yes", "on")
+    if file_only:
+        env_val = ""
+    else:
+        env_val = (os.getenv(env_var) or "").strip()
     if env_val:
         # カンマ区切り or 改行/空白区切りを許容
         parts = re.split(r"[\s,]+", env_val)
@@ -47,11 +53,14 @@ def load_rss_feed_urls(
 
 
 def fetch_feed_xml(url: str, timeout: int = 10) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    res = requests.get(url, headers=headers, timeout=timeout)
-    res.raise_for_status()
-    res.encoding = res.apparent_encoding
-    return res.text
+    # security_spec.md: RSS取得もURL検証・サイズ上限・リダイレクト制御を適用する
+    _ = validate_outbound_url(url, purpose="rss")
+    result = fetch_url_bytes(url, purpose="rss")
+    try:
+        return result.content.decode("utf-8")
+    except Exception:
+        # 最低限のフォールバック（XMLはUTF-8以外もあり得る）
+        return result.content.decode("utf-8", errors="ignore")
 
 
 def parse_feed(xml_text: str) -> list[FeedItem]:

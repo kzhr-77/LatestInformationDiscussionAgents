@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from langchain_core.language_models import BaseChatModel
 from langchain_community.tools.tavily_search import TavilySearchResults
 from src.utils.rss import fetch_feed_xml, load_rss_feed_urls, parse_feed, rank_items_by_query
+from src.utils.security import fetch_url_bytes, validate_outbound_url, UrlValidationError
 import logging
 
 
@@ -139,14 +140,13 @@ class ResearcherAgent:
             ValueError: URLから記事を取得できない場合
         """
         try:
+            # security_spec.md: URL直入力/RSS由来URLともにSSRF対策の検証を必須化
+            safe_url = validate_outbound_url(url, purpose="article")
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding
-
-            raw_html = response.text
+            fetched = fetch_url_bytes(safe_url, purpose="article", headers=headers)
+            raw_html = fetched.content.decode("utf-8", errors="ignore")
 
             # 可能なら readability で本文抽出（別記事一覧/ナビ混入を抑える）
             extracted_html = None
@@ -298,7 +298,7 @@ class ResearcherAgent:
 
             if include_header:
                 title = extract_title()
-                header_parts = [f"[source] {url}"]
+                header_parts = [f"[source] {safe_url}"]
                 if title:
                     header_parts.append(f"[title] {title}")
                 header = "\n".join(header_parts).strip()
@@ -308,6 +308,8 @@ class ResearcherAgent:
             
         except requests.exceptions.RequestException as e:
             raise ValueError(f"URLから記事を取得できませんでした: {e}")
+        except UrlValidationError as e:
+            raise ValueError(f"危険/不正なURLのため取得を拒否しました: {e}")
         except Exception as e:
             raise ValueError(f"記事の解析中にエラーが発生しました: {e}")
     
@@ -375,6 +377,9 @@ class ResearcherAgent:
         
         # URLかキーワードかを判定
         if self._is_url(topic):
+            # security_spec.md: URL直入力を運用で無効化できるようにする
+            if (os.getenv("ALLOW_URL_FETCH") or "").strip() in ("0", "false", "False", "no", "off"):
+                raise ValueError("URL直入力による取得は無効です（ALLOW_URL_FETCH=0）。")
             # URLの場合: 直接コンテンツを取得
             return self._fetch_from_url(topic, include_header=True)
         else:

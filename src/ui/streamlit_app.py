@@ -16,6 +16,7 @@ if str(project_root) not in sys.path:
 
 from src.core.graph import create_graph
 from src.utils.logging_config import setup_logging
+from src.utils.security import sanitize_url_for_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ if st.button("分析開始"):
             # 初期状態の設定
             request_id = str(uuid.uuid4())
             initial_state = {"topic": topic, "messages": [], "request_id": request_id}
-            logger.info("[%s] UI開始 topic=%s model=%s", request_id, topic, model_name)
+            logger.info("[%s] UI開始 topic=%s model=%s", request_id, sanitize_url_for_logging(topic), model_name)
             
             # グラフの実行
             with st.spinner("分析中..."):
