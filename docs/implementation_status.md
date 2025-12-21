@@ -1,6 +1,6 @@
 # 現在の実装状況
 
-**最終更新日**: 2025-12-19
+**最終更新日**: 2025-12-21
 **プロジェクト**: LatestInformationDiscussionAgents
 
 本書は、現在の実装状況をまとめたものです。
@@ -86,6 +86,10 @@ LatestInformationDiscussionAgents/
   - `tools/smoke_phase3_no_ollama.py`: フェーズ3を含む完走と出力キー検証（LLMは強制失敗モデルでフォールバック経路を通す）
   - `tools/smoke_rss_no_keyword_exits.py`: RSS一致なし時に通知して早期終了することを検証
   - `src/utils/testing_models.py`: `AlwaysFailChatModel`（スモーク用）
+ - ✅ 単体テスト（unittest）を追加
+   - `tests/test_fact_checker_json_parsing.py`
+   - `tests/test_reporter_fallback.py`
+   - `tests/test_security_utils.py`（SSRF/URL検証）
 
 ## 3. 実装待ちタスク
 
@@ -151,24 +155,24 @@ LatestInformationDiscussionAgents/
   - `readability-lxml` を導入し、可能ならreadabilityで本文抽出→失敗時は従来抽出へフォールバック。
 - ✅ **`get_llm()` のモデル事前確認をオプション化**
   - `/api/tags` を毎回叩かないため、`get_llm(..., verify_model=...)` を追加。グラフ側は `verify_model=False` で軽量化。
+- ✅ **セキュリティ（SSRF/外部HTTP）対策**
+  - `src/utils/security.py` を追加し、外部HTTPアクセスを共通化（URL検証、拒否IPレンジ、DNS解決、リダイレクト制御、サイズ上限）。
+  - URL直入力 / RSSフィード取得 / RSS由来記事URL取得のすべてに適用。
+  - RSS許可リストは `RSS_FEEDS_FILE_ONLY=1`（推奨）でファイルのみ運用に寄せられる。
+  - UIログはURLをマスクして記録（クエリ/フラグメント除去）。
+  - 仕様は `docs/security_spec.md` に明文化。
 
 ## 6. 次の作業（優先度順）
 
 1. **レポート品質の調整（Phase4の磨き込み）**
    - 要約/統合結論の精度向上（記事本文に根拠の無い断定を抑制、論点の具体性を上げる）。
-   - 特に「記事の内容」と「記事に紐づかない周辺ニュース/一般論」が混ざるケースを抑制する。
-2. **FactCheckerのさらなる堅牢化（残課題）**
-   - JSON抽出で対応できない「括弧がネストした長文」等のケースに備え、より厳密なJSON抽出（ストリームパーサ/括弧カウント）を検討。
-   - 失敗時のログ観測性（rawの短い断片を安全に出す等）を整備する。
-3. **Reporterのさらなる堅牢化（残課題）**
-   - facts段/統合段の structured_output を必要に応じてJSON出力に統一し、モデル差をさらに吸収する。
-   - extracted facts の品質評価（重複・一般論率・具体性）を簡易スコア化して、弱いときは抽出戦略を変える。
-4. **本文抽出（readability）の改善（残課題）**
-   - readability抽出が短すぎる/空になるサイトの改善（閾値判定・サイト別フォールバック・タイトル後処理）。
-5. **UIのエラーメッセージ改善（残課題）**
-   - `verify_model=False` により「モデル未取得」が実行時に顕在化するため、UI側で補助チェック（任意）を追加するか、例外整形を強化する。
-6. **テスト拡充（任意）**
-   - FactChecker JSONパースの単体テスト（フェンス/前置き/複数JSON/型崩れ）。
-   - Reporterの段階フォールバックの単体テスト（facts失敗、report失敗、両方失敗）。
+   - 「記事の内容」と「記事に紐づかない周辺ニュース/一般論」の混入をさらに抑制（評価指標/ガードの追加）。
+2. **本文抽出（サイト別チューニング）**
+   - readability抽出が短すぎる/空になるサイトの追加改善（サイト別フォールバック、タイトル後処理）。
+3. **セキュリティ仕様の“運用確定”（残課題）**
+   - `security_spec.md` の RSS item.link 方針（A案/B案）を運用として確定し、必要なら実装も制限（ドメイン同一/allowlistのみ等）。
+4. **テスト拡充（任意）**
+   - SSRF/URL検証: リダイレクト検証、IPv6/IPv4-mapped、サイズ上限（Content-Length/ストリーム）を追加。
+   - Reporter/FactChecker: さらに多様な出力揺れケースの追加。
 
 

@@ -31,18 +31,24 @@
 2. URLの場合: 直接コンテンツを取得（BeautifulSoup等を使用）
 3. キーワードの場合: **RSS/公式フィード許可リスト方式**で記事候補を検索（安全重視・外部検索API不要）
 4. （任意）Tavily検索APIは **APIキーがある場合のみフォールバック**として利用
-4. 記事テキストを抽出・整形
-5. テキストを返却
+5. 記事テキストを抽出・整形
+6. テキストを返却
 
 **使用ツール**:
 - RSS/Atom取得・パース（許可リスト: `RSS_FEED_URLS` または `config/rss_feeds.txt`）
 - `TavilySearchResults`（キーワード検索の任意フォールバック: `TAVILY_API_KEY` がある場合のみ）
 - ウェブスクレイピングライブラリ（URL直接取得用）
+- （実装）SSRF対策ユーティリティ（`src/utils/security.py`）でURL検証・サイズ上限・リダイレクト制御を適用
 
 **エラーハンドリング**:
 - RSSフィード内にキーワード一致が見つからない場合: `RssKeywordNotFoundError` を送出（上位のグラフで通知して早期終了）
 - 検索結果が見つからない/取得失敗の場合: `ValueError` を送出（上位でログ＋フォールバック）
-- ネットワークエラー: リトライロジックを実装
+- ネットワークエラー: 例外を捕捉し、上位でフォールバック/エラーメッセージ化（リトライは未実装）
+
+**セキュリティ（実装済み）**:
+- URL直入力は `ALLOW_URL_FETCH=0` で無効化可能
+- RSS許可リストは `RSS_FEEDS_FILE_ONLY=1`（推奨）でファイル運用に固定可能
+- URL検証（スキーム制限、userinfo禁止、DNS解決+拒否IPレンジ、ドメイン許可リスト、リダイレクト制御、サイズ上限）
 
 ---
 
@@ -213,7 +219,8 @@
 
 ### 4.4 実装上の注意点
 - 温度パラメータ: `temperature=0.3`（事実検証のため、低めに設定）
-- 構造化出力で `Critique` モデルに直接マッピング
+- （実装）structured output の失敗に備え、JSON文字列出力→パース復元を標準化（`bias_points`/`factual_errors` を必ず返す）
+- （実装）JSON抽出は括弧カウントで頑健化し、失敗時は安全な短い断片のみログに残す
 
 ---
 
@@ -227,15 +234,18 @@
 ### 5.2 入力・出力仕様
 
 #### （設計）`create_report(...全フェーズの出力...) -> FinalReport`
-- **状態**: 現在の実装は **モック**。`create_report(discussion_history: list) -> str` が固定文字列を返し、グラフ側で `FinalReport` に詰め替えている。
-- **設計上の入力/出力**:
-  - **入力**: 全フェーズの出力データ
+- **状態**: ✅ **実装済み**（`src/agents/reporter.py`）。
+- **実装上の入力/出力**:
+  - **入力**: `article_text`, `optimistic_argument`, `pessimistic_argument`, `critique`, `optimistic_rebuttal`, `pessimistic_rebuttal`, `article_url`
   - **出力**: `FinalReport` (Pydanticモデル)
-    - `article_info: str` - 記事タイトル、ソース、要約
-    - `optimistic_view: Argument` - 楽観的アナリストの最終的な主張
-    - `pessimistic_view: Argument` - 悲観的アナリストの最終的な主張
-    - `critique_points: List[str]` - ファクトチェッカーの指摘事項の要約
-    - `final_conclusion: str` - 議論を経て導き出された統合的な結論（機会とリスクのバランス）
+    - `article_info: str` - 記事タイトル、ソース、要約（3行）
+    - `optimistic_view: Argument` / `pessimistic_view: Argument` - stateの値をそのまま採用（幻覚混入抑制）
+    - `critique_points: List[str]` - Critique/反論/本文一致チェックからタグ付きで決定的に生成
+    - `final_conclusion: str` - 機会/リスク＋「確実度が高い点」「不確かな点」を含む
+
+**実装詳細（要点）**:
+- 2段構成: facts抽出 → 統合レポート生成
+- structured output が不安定なモデルでも完走できるよう、JSON文字列フォールバック＋テンプレ/機械抽出フォールバックを備える
 
 ### 5.3 プロンプト設計方針
 
