@@ -15,7 +15,7 @@ def main() -> int:
     graph = create_graph(llm=failing, llm_fact_checker=failing)
     # RSS設定が有効な環境ではキーワードがヒットせず早期終了(halt)する可能性があるため、
     # URL入力（失敗しても article_text="エラー: ..." で後続フェーズが完走する経路）でスモークする。
-    result = graph.invoke({"topic": "http://example.com", "messages": [], "request_id": "smoke"})
+    result = graph.invoke({"topic": "https://example.com", "messages": [], "request_id": "smoke"})
 
     required_keys = [
         "optimistic_argument",

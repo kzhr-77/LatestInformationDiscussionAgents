@@ -81,7 +81,9 @@ class ReporterAgent:
 - 出力は**必ず日本語**
 - 記事本文に無い事実を作らない（不明な点は「不明」と書く）
 - 一般論だけで終わらせない。下の「抽出済み事実」または「本文引用候補」に含まれる具体情報に必ず触れること
-- 要約/結論の中で、少なくとも2点は「抽出済み事実」の箇条書き内容（数字/固有名詞/決定事項）を根拠として含めること
+- 要約/結論の中で、少なくとも2点は「抽出済み事実」または「本文引用候補」の文言を短く引用して含めること（10〜25文字程度の断片でよい）
+- 要約/結論に**新しい数字/固有名詞/断定的な因果**を追加しない（本文に無い情報は「不明」「可能性」にとどめる）
+- 「引用根拠チェック」で一致しない可能性がある点は、事実として断定せず注意喚起として扱う
 - 結論は「機会」と「リスク」を両方扱う
 
 出力は次の構造（ReportContent）に合わせること:
@@ -357,6 +359,79 @@ class ReporterAgent:
 
         return False
 
+    @staticmethod
+    def _grounding_score(text: str, anchors: list[str]) -> int:
+        """
+        本文由来アンカー（抽出事実/引用候補）にどれだけ寄っているかの簡易スコア。
+        - 文字列一致の弱いヒューリスティックだが、一般論化の検知に有効
+        """
+        s = (text or "").strip()
+        if not s:
+            return 0
+        sc = 0
+        if re.search(r"\d", s):
+            sc += 2
+        # アンカー断片（先頭15〜25文字）を含むか
+        for a in (anchors or [])[:8]:
+            a2 = ("" if a is None else str(a)).strip()
+            if not a2:
+                continue
+            frag = a2[:20]
+            if frag and frag in s:
+                sc += 2
+        # 一般論語の多さで減点
+        generic_tokens = ["一般的に", "重要", "必要", "求められる", "注目", "議論", "影響", "可能性", "慎重", "べき"]
+        genericish = sum(1 for t in generic_tokens if t in s)
+        if genericish >= 4:
+            sc -= 2
+        return sc
+
+    @staticmethod
+    def _synthesize_summary_from_facts(extracted_facts: list[str], quote_lines: list[str]) -> str:
+        """
+        LLM出力が一般論化したときの、本文ベース最小要約。
+        """
+        facts = [("" if x is None else str(x)).strip() for x in (extracted_facts or [])]
+        facts = [x for x in facts if x]
+        if not facts and quote_lines:
+            facts = quote_lines[:3]
+        top = facts[:3]
+        if not top:
+            return "この記事は本文から具体情報を十分に抽出できませんでした（URL/サイトの取得制限や本文構造の影響の可能性）。"
+        inline = " / ".join([x[:80] + ("…" if len(x) > 80 else "") for x in top])
+        return f"この記事は本文から次の点が確認できます: {inline}"
+
+    @staticmethod
+    def _synthesize_conclusion_from_facts(
+        extracted_facts: list[str],
+        unknowns: list[str],
+        critique_points: list[str],
+        quote_lines: list[str],
+        has_mismatch: bool,
+    ) -> str:
+        """
+        LLM出力が弱い/壊れたときの、本文ベース最小結論（機会/リスク/確実&不確か を含む）。
+        """
+        facts = [("" if x is None else str(x)).strip() for x in (extracted_facts or []) if ("" if x is None else str(x)).strip()]
+        unks = [("" if x is None else str(x)).strip() for x in (unknowns or []) if ("" if x is None else str(x)).strip()]
+        q = quote_lines[0][:80] + ("…" if quote_lines and len(quote_lines[0]) > 80 else "") if quote_lines else ""
+        hi = f"本文抜粋（「{q}」）に基づく範囲の事実。" if q else "本文から直接確認できる範囲の事実。"
+        if has_mismatch:
+            lo = "アナリストの引用の一部は本文一致しない可能性があり、追加検証が必要。"
+        else:
+            lo = (unks[0] if unks else "記事本文だけでは影響評価や因果の断定が難しい点。")
+        # まずは本文から言える範囲で「機会/リスク」を分ける（汎用だが断定は避ける）
+        opp_anchor = facts[0][:60] + ("…" if facts and len(facts[0]) > 60 else "") if facts else ""
+        risk_anchor = facts[1][:60] + ("…" if len(facts) > 1 and len(facts[1]) > 60 else "") if len(facts) > 1 else ""
+        caution = ""
+        if critique_points:
+            caution = f"（留意: {critique_points[0][:120]}）"
+        return (
+            f"抽出できた事実の範囲で見ると、機会は「{opp_anchor}」のような動きが実現した場合に期待される点として整理できます。"
+            f"一方、リスクは「{risk_anchor}」など不確実性や副作用を含む可能性があるため、断定せず追加確認が必要です。{caution} "
+            f"確実度が高い点: {hi} 不確かな点: {lo}"
+        ).strip()
+
     def create_report(
         self,
         article_text: str,
@@ -539,6 +614,25 @@ class ReporterAgent:
 
             # final_conclusion 末尾の不要記号を軽く正規化（モデルによって引用符が混入することがある）
             final_conclusion = re.sub(r'[\"”]+\\}?\\s*$', "", final_conclusion).strip()
+
+            # --- Phase4 品質ガード（一般論/根拠なし断定の抑制） ---
+            anchors = []
+            anchors.extend([ln for ln in quote_lines[:6] if ln])
+            anchors.extend([f for f in extracted_facts[:8] if f])
+
+            # summary が本文アンカーに寄っていなければ、テンプレ要約に寄せる
+            if self._grounding_score(summary, anchors) < 2:
+                summary = self._synthesize_summary_from_facts(extracted_facts, quote_lines)
+
+            # conclusion が弱い/一般論すぎる場合は、テンプレ結論に寄せる
+            if self._grounding_score(final_conclusion, anchors) < 2:
+                final_conclusion = self._synthesize_conclusion_from_facts(
+                    extracted_facts=extracted_facts,
+                    unknowns=unknowns,
+                    critique_points=critique_points,
+                    quote_lines=quote_lines,
+                    has_mismatch=has_mismatch,
+                )
 
             # summaryが抽象的すぎる場合は、本文引用候補を使って最低限の具体性を付与する
             if quote_lines:

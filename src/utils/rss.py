@@ -17,6 +17,7 @@ class FeedItem:
     link: str
     summary: str = ""
     published: str = ""
+    feed_url: str = ""
 
 
 def load_rss_feed_urls(
@@ -63,7 +64,7 @@ def fetch_feed_xml(url: str, timeout: int = 10) -> str:
         return result.content.decode("utf-8", errors="ignore")
 
 
-def parse_feed(xml_text: str) -> list[FeedItem]:
+def parse_feed(xml_text: str, feed_url: str = "") -> list[FeedItem]:
     """
     RSS2.0 / Atom の最低限パース（タイトル・リンク・概要を抽出）。
     """
@@ -89,7 +90,7 @@ def parse_feed(xml_text: str) -> list[FeedItem]:
             summary = _text(it.find("description"))
             published = _text(it.find("pubDate"))
             if link:
-                items.append(FeedItem(title=title, link=link, summary=summary, published=published))
+                items.append(FeedItem(title=title, link=link, summary=summary, published=published, feed_url=feed_url))
         return items
 
     # Atom: <feed><entry>...
@@ -110,7 +111,7 @@ def parse_feed(xml_text: str) -> list[FeedItem]:
                     link = text_link
                     break
             if link:
-                items.append(FeedItem(title=title, link=link, summary=summary, published=published))
+                items.append(FeedItem(title=title, link=link, summary=summary, published=published, feed_url=feed_url))
         return items
 
     return []

@@ -64,7 +64,7 @@ class ResearcherAgent:
         for feed_url in feed_urls[:50]:  # 念のため上限
             try:
                 xml = fetch_feed_xml(feed_url, timeout=10)
-                items = parse_feed(xml)
+                items = parse_feed(xml, feed_url=feed_url)
                 all_items.extend(items)
             except Exception as e:
                 logging.getLogger(__name__).warning("RSS取得失敗: %s (%s)", feed_url, e)
@@ -93,6 +93,28 @@ class ResearcherAgent:
                 continue
             seen_urls.add(url)
             try:
+                # security_spec.md: RSS item.link 方針（A案/B案）
+                # - A案（安全最優先）: フィードと同一ドメイン、または URL_ALLOWLIST_DOMAINS に含まれる場合のみ取得
+                # - B案（柔軟）: 取得可。ただし validate_outbound_url は必須
+                policy = (os.getenv("RSS_ITEM_LINK_POLICY") or "A").strip().upper()
+                if policy not in ("A", "B"):
+                    policy = "A"
+                if policy == "A":
+                    try:
+                        feed_host = (urlparse(getattr(it, "feed_url", "") or "").hostname or "").lower().strip(".")
+                        item_host = (urlparse(url).hostname or "").lower().strip(".")
+                    except Exception:
+                        feed_host = ""
+                        item_host = ""
+                    allowlist = (os.getenv("URL_ALLOWLIST_DOMAINS") or "").strip()
+                    # allowlist は security.py 側で解釈されるので、ここでは「同一ドメイン」だけ先に絞る
+                    if feed_host and item_host and item_host != feed_host and not item_host.endswith("." + feed_host):
+                        # allowlist による許可は validate_outbound_url で判定される（URL_ALLOWLIST_DOMAINS が設定されていれば通る）
+                        # ただし allowlist 未設定の場合はここでスキップする
+                        if not allowlist:
+                            logging.getLogger(__name__).info("RSS item.link をスキップ（A案: feed外ドメイン）: feed=%s item=%s", feed_host, item_host)
+                            continue
+                        # allowlist がある場合は validate_outbound_url に任せる（通らなければ例外になる）
                 # RSS経由は上で[source]/[title]を付与するので、二重ヘッダを避ける
                 article = self._fetch_from_url(url, include_header=False)
                 header = f"[source] {url}\n[title] {it.title}".strip()
@@ -176,9 +198,24 @@ class ResearcherAgent:
             soup = BeautifulSoup(extracted_html or raw_html, 'lxml')
 
             # タイトル抽出（後段のレポートで利用）
+            def _clean_title(t: str) -> str:
+                s = (t or "").strip()
+                s = " ".join(s.split())
+                if not s:
+                    return ""
+                # サイト名サフィックスを落としやすい区切りを試す（長さが極端に短くなる場合は採用しない）
+                seps = [" | ", " - ", "｜", "–", "—", "：", ":"]
+                best = s
+                for sep in seps:
+                    if sep in s:
+                        head = s.split(sep, 1)[0].strip()
+                        if 8 <= len(head) <= len(best):
+                            best = head
+                return best.strip()
+
             def extract_title() -> str:
                 if extracted_title:
-                    return extracted_title
+                    return _clean_title(extracted_title)
                 # 1) og:title / twitter:title / meta name=title
                 try:
                     for sel in [
@@ -190,7 +227,7 @@ class ResearcherAgent:
                         if tag and tag.get("content"):
                             t = str(tag.get("content")).strip()
                             if t:
-                                return t
+                                return _clean_title(t)
                 except Exception:
                     pass
 
@@ -203,7 +240,7 @@ class ResearcherAgent:
                         if h1:
                             t = h1.get_text(separator=" ", strip=True)
                             if t:
-                                return t
+                                return _clean_title(t)
                 except Exception:
                     pass
 
@@ -212,7 +249,7 @@ class ResearcherAgent:
                     if soup.title and soup.title.string:
                         t = str(soup.title.string).strip()
                         if t:
-                            return t
+                            return _clean_title(t)
                 except Exception:
                     pass
 
@@ -241,6 +278,58 @@ class ResearcherAgent:
                     parts.append(t)
                 return "\n".join(parts)
 
+            def select_best_container(s: BeautifulSoup) -> str:
+                """
+                article/mainが無い or 本文が落ちるサイト向けの追加ヒューリスティック。
+                いくつかの「本文っぽい」コンテナ候補から、段落テキスト量が最大のものを採用する。
+                """
+                selectors = [
+                    "article",
+                    "main",
+                    "div[role='main']",
+                    "[itemprop='articleBody']",
+                    "#content",
+                    ".content",
+                    ".article",
+                    ".post",
+                    ".entry-content",
+                    ".post-content",
+                    ".article-body",
+                    ".story-body",
+                    ".main-content",
+                ]
+                candidates = []
+                try:
+                    for sel in selectors:
+                        candidates.extend(list(s.select(sel))[:10])
+                except Exception:
+                    candidates = []
+                # 重複除去（idベース）
+                uniq = []
+                seen_ids = set()
+                for el in candidates:
+                    try:
+                        k = id(el)
+                    except Exception:
+                        k = None
+                    if k is None or k in seen_ids:
+                        continue
+                    seen_ids.add(k)
+                    uniq.append(el)
+                best_text = ""
+                best_len = 0
+                for el in uniq[:50]:
+                    try:
+                        t = extract_from(el)
+                    except Exception:
+                        continue
+                    # 極端に短いコンテナは無視
+                    tl = len(t or "")
+                    if tl > best_len:
+                        best_len = tl
+                        best_text = t
+                return best_text
+
             # 1) article
             article = soup.find('article')
             if article:
@@ -251,6 +340,12 @@ class ResearcherAgent:
                 main = soup.find('main')
                 if main:
                     text = extract_from(main) or main.get_text(separator='\n', strip=True)
+
+            # 2.5) 本文っぽいコンテナの最大選択（サイト別DOM差異の吸収）
+            if len(text) < 200:
+                picked = select_best_container(soup)
+                if picked and len(picked) > len(text):
+                    text = picked
 
             # 3) body全体（最終フォールバック）
             if len(text) < 200:
@@ -282,6 +377,35 @@ class ResearcherAgent:
             
             # テキストを整形（空行を削除、長すぎる行を分割）
             lines = [line.strip() for line in text.split('\n') if line.strip()]
+            # ナビ/フッタっぽい短文を軽く除外（最終フォールバック由来の混入対策）
+            noise_tokens = [
+                "ログイン",
+                "会員登録",
+                "メニュー",
+                "ホーム",
+                "プライバシー",
+                "利用規約",
+                "Cookie",
+                "©",
+                "All rights reserved",
+                "シェア",
+                "フォロー",
+                "人気記事",
+                "関連記事",
+                "次の記事",
+                "前の記事",
+            ]
+            filtered_lines = []
+            for ln in lines:
+                if len(ln) <= 3:
+                    continue
+                if any(tok in ln for tok in noise_tokens) and len(ln) <= 40:
+                    continue
+                # URLっぽい行は除外
+                if "http://" in ln or "https://" in ln:
+                    continue
+                filtered_lines.append(ln)
+            lines = filtered_lines
             # 重複行を除去（ナビ/パンくず等の反復ノイズを軽減）
             deduped = []
             seen = set()

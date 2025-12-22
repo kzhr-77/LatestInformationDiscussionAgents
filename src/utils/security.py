@@ -286,7 +286,10 @@ def fetch_url_bytes(url: str, *, purpose: Purpose, headers: dict | None = None) 
             try:
                 if int(cl) > max_bytes:
                     raise ResponseTooLargeError("レスポンスがサイズ上限を超えています。")
+            except ResponseTooLargeError:
+                raise
             except Exception:
+                # Content-Length が数値でない場合はストリーム上限で制御する
                 pass
 
         buf = bytearray()
