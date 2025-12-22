@@ -166,6 +166,13 @@ LatestInformationDiscussionAgents/
 
 1. **（レビュー反映）SSRF対策の強化（DNS Rebinding/TOCTOU）**
    - `validate_outbound_url()` のDNS解決チェックと実接続の間でDNSが変わる余地（TOCTOU）への追加対策を検討（IP固定接続＋Host固定等）。
+   - **難易度が高めな理由**:
+     - 事前にDNS解決してIPを検査しても、実際のHTTP接続はホスト名で行われるため、検証後にDNSが変わると“すり抜け”余地が残る（TOCTOU）。
+     - HTTPSでは「IPへ直接接続」するとTLSのSNI/証明書検証（ホスト名一致）を両立させる必要があり、`requests` だけで安全に実装するのが難しい。
+   - **現実的な対応策（優先順）**:
+     - 運用で強化: `URL_ALLOWLIST_DOMAINS` を必須運用にし、信頼できる配信元ドメイン以外を遮断する。
+     - 運用で強化: 既定どおり `URL_ALLOW_REDIRECTS=0` を維持（オープンリダイレクト経由の到達面を縮小）。
+     - 実装で強化（中〜高コスト）: 事前に解決したIPへ接続しつつ Host/SNI を固定する方式（カスタムアダプタ/追加実装が必要になりやすい）。
 2. **（レビュー反映）HTTPプロキシ環境変数の影響を制御**
    - `requests` が `HTTP_PROXY/HTTPS_PROXY` 等を拾う運用で想定外の経路になり得るため、`trust_env=False` 等の方針を検討。
 3. **（レビュー反映）許可ポートのホワイトリスト化**

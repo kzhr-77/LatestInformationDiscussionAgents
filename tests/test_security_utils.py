@@ -28,6 +28,25 @@ class TestSecurityUtils(unittest.TestCase):
         with self.assertRaises(UrlValidationError):
             validate_outbound_url("https://user:pass@example.com/", purpose="article")
 
+    def test_rejects_disallowed_port_by_default(self):
+        # 既定: https は 443 以外を拒否
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [(2, None, None, None, ("93.184.216.34", 0))]
+
+        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            with self.assertRaises(UrlValidationError):
+                validate_outbound_url("https://example.com:8443/news", purpose="article")
+
+    def test_allows_port_if_in_allowlist(self):
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [(2, None, None, None, ("93.184.216.34", 0))]
+
+        with patch.dict(os.environ, {"URL_ALLOWED_PORTS": "8443"}):
+            with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+                # allowlistに含めれば許可される
+                out = validate_outbound_url("https://example.com:8443/news", purpose="article")
+                self.assertIn(":8443", out)
+
     def test_rejects_localhost(self):
         with self.assertRaises(UrlValidationError):
             validate_outbound_url("https://localhost:11434/", purpose="article")
@@ -154,6 +173,39 @@ class TestSecurityUtils(unittest.TestCase):
                 with patch("src.utils.security.validate_outbound_url", side_effect=ok_validate):
                     with self.assertRaises(ResponseTooLargeError):
                         fetch_url_bytes("https://example.com/news", purpose="article")
+
+    def test_fetch_disables_env_proxy_by_default(self):
+        # requests.Session().trust_env が False になること（環境プロキシを拾わない）
+        class FakeResponse:
+            def __init__(self):
+                self.status_code = 200
+                self.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=65536):
+                yield b"ok"
+
+            def close(self):
+                return None
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+
+            def get(self, url, headers=None, timeout=None, stream=None, allow_redirects=None):
+                return FakeResponse()
+
+        sess = FakeSession()
+
+        def ok_validate(url, *, purpose):
+            return url
+
+        with patch("src.utils.security.requests.Session", return_value=sess):
+            with patch("src.utils.security.validate_outbound_url", side_effect=ok_validate):
+                fetch_url_bytes("https://example.com/news", purpose="article")
+                self.assertFalse(sess.trust_env)
 
 
 if __name__ == "__main__":

@@ -194,6 +194,27 @@ def validate_outbound_url(url: str, *, purpose: Purpose) -> str:
     if scheme not in allowed_schemes:
         raise UrlValidationError(f"許可されていないスキームです: {scheme}")
 
+    # ポート制限（SSRFの攻撃面を狭める）
+    # - URL_ALLOWED_PORTS が指定されていればそれを優先
+    # - 未指定なら scheme ごとの既定（https=443, http=80）を許可
+    port = p.port  # None if not explicitly specified
+    if port is not None:
+        ports_env = _split_list_env("URL_ALLOWED_PORTS")
+        allowed_ports: set[int] = set()
+        if ports_env:
+            for x in ports_env:
+                try:
+                    allowed_ports.add(int(x))
+                except Exception:
+                    continue
+        else:
+            if scheme == "https":
+                allowed_ports = {443}
+            elif scheme == "http":
+                allowed_ports = {80}
+        if allowed_ports and port not in allowed_ports:
+            raise UrlValidationError(f"許可されていないポートです: {port}")
+
     # userinfo禁止
     if p.username or p.password:
         raise UrlValidationError("ユーザー名/パスワード付きURLは許可されません。")
@@ -247,6 +268,8 @@ def fetch_url_bytes(url: str, *, purpose: Purpose, headers: dict | None = None) 
         allowed_ct_prefixes = ("application/rss", "application/atom", "application/xml", "text/xml", "text/plain")
 
     sess = requests.Session()
+    # security: 環境変数（HTTP_PROXY/HTTPS_PROXY等）による経路変更を既定で無効化（必要なら運用で有効化）
+    sess.trust_env = _env_bool("HTTP_TRUST_ENV", False)
     hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     if headers:
         hdrs.update(headers)
