@@ -7,6 +7,8 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from src.utils.rss import fetch_feed_xml, load_rss_feed_urls, parse_feed, rank_items_by_query
 from src.utils.security import fetch_url_bytes, validate_outbound_url, UrlValidationError
 import logging
+import re
+import unicodedata
 
 
 class RssKeywordNotFoundError(ValueError):
@@ -258,6 +260,48 @@ class ResearcherAgent:
             # まず不要要素を削除（ノイズ混入を減らす）
             for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg']):
                 tag.decompose()
+
+            # --- 対策(a): 人間が見えないDOM（hidden/aria-hidden/CSSで不可視）を除去 ---
+            _invisible_style_pat = re.compile(
+                r"(display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0\b|font-size\s*:\s*0\b|text-indent\s*:\s*-9\d{2,}px)",
+                re.IGNORECASE,
+            )
+
+            def drop_hidden_elements(s: BeautifulSoup) -> None:
+                # 明示属性
+                try:
+                    for el in s.select("[hidden], [aria-hidden='true']"):
+                        try:
+                            el.decompose()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # よくある視覚非表示クラス（スクリーンリーダー向け等）
+                for cls in ["sr-only", "visually-hidden", "sr_hidden", "u-hidden"]:
+                    try:
+                        for el in s.select(f".{cls}"):
+                            try:
+                                el.decompose()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                # style属性（最小限の判定に留める）
+                try:
+                    for el in s.select("[style]"):
+                        try:
+                            st = (el.get("style") or "")
+                            if st and _invisible_style_pat.search(st):
+                                el.decompose()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            drop_hidden_elements(soup)
             
             # 記事本文を抽出（一般的なHTMLタグから）
             # - サイトによっては <article> が「見出しのみ」で本文が別DOMにあるケースがあるため
@@ -358,6 +402,8 @@ class ResearcherAgent:
                     soup2 = BeautifulSoup(raw_html, "lxml")
                     for tag in soup2(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'svg']):
                         tag.decompose()
+                    # --- 対策(a): 生HTML側でも不可視DOMを除去 ---
+                    drop_hidden_elements(soup2)
                     text2 = ""
                     article2 = soup2.find("article")
                     if article2:
@@ -366,6 +412,10 @@ class ResearcherAgent:
                         main2 = soup2.find("main")
                         if main2:
                             text2 = extract_from(main2) or main2.get_text(separator="\n", strip=True)
+                    if len(text2) < 200:
+                        picked2 = select_best_container(soup2)
+                        if picked2:
+                            text2 = picked2
                     if len(text2) < 200:
                         body2 = soup2.find("body") or soup2
                         text2 = extract_from(body2) or body2.get_text(separator="\n", strip=True)
@@ -416,6 +466,23 @@ class ResearcherAgent:
                 deduped.append(line)
             lines = deduped
             text = '\n'.join(lines)
+
+            # --- 対策(b): 0幅文字/方向制御/制御文字を除去して正規化（不可視テキスト混入対策） ---
+            # 例: ZWSP(200B) / ZWNJ(200C) / ZWJ(200D) / BOM(FEFF) / bidi制御(202A-202E,2066-2069)
+            def normalize_extracted_text(s: str) -> str:
+                t = "" if s is None else str(s)
+                # 互換正規化（全角/半角などを揃える）
+                t = unicodedata.normalize("NFKC", t)
+                # 不可視・方向制御
+                t = re.sub(r"[\u200b\u200c\u200d\ufeff\u202a-\u202e\u2066-\u2069]", "", t)
+                # 改行/タブ以外の制御文字を除去
+                t = "".join(ch for ch in t if (ch == "\n" or ch == "\t" or ch >= " "))
+                # 空白を軽く正規化
+                t = re.sub(r"[ \t]+", " ", t)
+                t = re.sub(r"\n{3,}", "\n\n", t)
+                return t.strip()
+
+            text = normalize_extracted_text(text)
             
             if len(text) < 120:
                 raise ValueError("記事テキストが短すぎます。正しいURLか確認してください。")
