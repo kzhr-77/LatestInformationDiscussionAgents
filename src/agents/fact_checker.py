@@ -105,10 +105,88 @@ class FactCheckerAgent:
             factual_errors = [self._truncate_text(x, 200) for x in factual_errors]
             factual_errors = self._dedupe_points(factual_errors)
 
+            # --- 日本語化: まれに英語で返るケースがあるため、UI表示向けに日本語へ寄せる ---
+            # - モデル未接続/失敗時はそのまま（フォールバック）
+            bias_points = self._ensure_japanese_points(bias_points, kind="bias_points")
+            factual_errors = self._ensure_japanese_points(factual_errors, kind="factual_errors")
+
             return Critique(bias_points=bias_points, factual_errors=factual_errors)
         except Exception:
             # 失敗時は元のまま返す
             return critique
+
+    @staticmethod
+    def _contains_japanese(text: str) -> bool:
+        s = "" if text is None else str(text)
+        # ひらがな・カタカナ・漢字が含まれていれば日本語っぽいとみなす
+        return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", s))
+
+    def _ensure_japanese_points(self, points: list[str], kind: str) -> list[str]:
+        """
+        bias_points / factual_errors に英語中心の項目が混ざる場合があるため、日本語へ寄せる。
+        - 既に日本語っぽいものはそのまま
+        - 翻訳に失敗した場合はそのまま（安全側）
+        """
+        items = [("" if x is None else str(x)).strip() for x in (points or [])]
+        items = [x for x in items if x]
+        if not items:
+            return items
+
+        # 英語中心と判断したものが無ければ何もしない
+        needs = [x for x in items if not self._contains_japanese(x)]
+        if not needs:
+            return items
+
+        try:
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        "system",
+                        "あなたは翻訳者です。必ず日本語で書き直してください。必ずJSONのみを出力してください。",
+                    ),
+                    (
+                        "human",
+                        """次の items を順番を変えずに日本語へ書き直してください。
+
+ルール:
+- 既に日本語の文はそのままでもよい
+- 先頭に「楽観的アナリスト:」「悲観的アナリスト:」「両アナリスト:」「Optimistic Analyst:」等のラベルがある場合は、ラベル（コロンまで）を維持し、後続だけ日本語にする
+- 各要素は200文字以内（超える場合は短く要約）
+- 出力は必ずこのJSONスキーマ:
+{{"items": ["..."]}}
+
+items:
+{items_json}
+""",
+                    ),
+                ]
+            )
+            raw = (prompt | self.model).invoke({"items_json": json.dumps(items, ensure_ascii=False)})
+            content = getattr(raw, "content", raw)
+            if not isinstance(content, str):
+                content = str(content)
+            cleaned = self._strip_code_fences(content)
+            json_text = (
+                self._extract_first_json_object_stream(cleaned)
+                or self._extract_first_json_object(cleaned)
+                or cleaned
+            )
+            data = json.loads(json_text)
+            out = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(out, list):
+                return items
+            out2 = [("" if x is None else str(x)).strip() for x in out]
+            out2 = [x for x in out2 if x]
+            # 長さが合わない場合は安全側（元を返す）
+            if len(out2) != len(items):
+                return items
+            # 再度丸め・重複除去
+            out2 = [self._truncate_text(x, 200) for x in out2]
+            out2 = self._dedupe_points(out2)
+            return out2
+        except Exception as e:
+            logging.getLogger(__name__).info("日本語化をスキップ（%s）: %s", kind, e)
+            return items
 
     @staticmethod
     def _dedupe_points(points: list[str]) -> list[str]:

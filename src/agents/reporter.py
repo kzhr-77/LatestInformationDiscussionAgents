@@ -337,6 +337,77 @@ class ReporterAgent:
         return None
 
     @staticmethod
+    def _contains_japanese(text: str) -> bool:
+        s = "" if text is None else str(text)
+        return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", s))
+
+    def _ensure_japanese_tagged_points(self, points: list[str]) -> list[str]:
+        """
+        critique_points は入力（Critique/反論）由来なので、まれに英語が混ざることがある。
+        UI表示の安定化のため、英語中心のものは日本語へ書き直す（失敗時はそのまま）。
+        """
+        items = [("" if x is None else str(x)).strip() for x in (points or [])]
+        items = [x for x in items if x]
+        if not items:
+            return items
+
+        # タグ部分（[Bias]等）を除いた本文が日本語を含むかで判定
+        need = []
+        for x in items:
+            body = re.sub(r"^\[[^\]]+\]\s*", "", x).strip()
+            if body and not self._contains_japanese(body):
+                need.append(x)
+        if not need:
+            return items
+
+        try:
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", "あなたは翻訳者です。必ず日本語で書き直してください。必ずJSONのみを出力してください。"),
+                    (
+                        "human",
+                        """次の items を順番を変えずに日本語へ書き直してください。
+
+ルール:
+- 先頭のタグ（例: [Factual] [Bias] [Rebuttal] [EvidenceCheck]）はそのまま維持する
+- 既に日本語の文はそのままでもよい
+- 各要素は200文字以内（超える場合は短く要約）
+- 出力は必ずこのJSONスキーマ:
+{{"items": ["..."]}}
+
+items:
+{items_json}
+""",
+                    ),
+                ]
+            )
+            raw = (prompt | self.model).invoke({"items_json": json.dumps(items, ensure_ascii=False)})
+            content = getattr(raw, "content", raw)
+            if not isinstance(content, str):
+                content = str(content)
+            cleaned = self._strip_code_fences(content)
+            json_text = self._extract_first_json_object_stream(cleaned) or cleaned
+            data = json.loads(json_text)
+            out = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(out, list):
+                return items
+            out2 = [("" if x is None else str(x)).strip() for x in out]
+            out2 = [x for x in out2 if x]
+            if len(out2) != len(items):
+                return items
+            # 200文字上限（念のため）
+            trimmed = []
+            for x in out2:
+                s = re.sub(r"\s+", " ", x).strip()
+                if len(s) > 200:
+                    s = s[:200].rstrip() + "…"
+                trimmed.append(s)
+            return trimmed
+        except Exception as e:
+            logging.getLogger(__name__).info("critique_pointsの日本語化をスキップ: %s", e)
+            return items
+
+    @staticmethod
     def _facts_looks_weak(extracted_facts: list[str], quote_lines: list[str]) -> bool:
         facts = [("" if x is None else str(x)).strip() for x in (extracted_facts or [])]
         facts = [x for x in facts if x]
@@ -598,6 +669,8 @@ class ReporterAgent:
                 deduped.append(p)
 
             critique_points = deduped[:12]
+            # --- 日本語化: まれに英語が混ざるケースに備える ---
+            critique_points = self._ensure_japanese_tagged_points(critique_points)
 
             # summary / final_conclusion を取り出し（失敗時はテンプレ合成）
             if content is not None:
