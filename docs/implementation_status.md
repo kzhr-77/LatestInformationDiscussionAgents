@@ -1,6 +1,6 @@
 # 現在の実装状況
 
-**最終更新日**: 2025-12-21
+**最終更新日**: 2025-12-22
 **プロジェクト**: LatestInformationDiscussionAgents
 
 本書は、現在の実装状況をまとめたものです。
@@ -12,6 +12,8 @@
 ```
 LatestInformationDiscussionAgents/
 ├── docs/                   # ドキュメント (本フォルダ)
+├── config/                 # 運用設定（RSS許可リスト等）
+│   └── rss_feeds.txt
 ├── src/
 │   ├── agents/             # エージェントロジックの実装
 │   ├── core/               # オーケストレーションロジック (LangGraph)
@@ -20,7 +22,7 @@ LatestInformationDiscussionAgents/
 │   └── utils/              # ユーティリティ (LLM, ツール)
 ├── main.py                 # CLIエントリーポイント
 ├── requirements.txt        # 依存ライブラリ
-└── .env                    # 設定 (APIキー)
+└── .env                    # 設定 (APIキー) ※リポジトリには含めない（ローカル作成）
 ```
 
 ## 2. コンポーネントの状態
@@ -72,7 +74,7 @@ LatestInformationDiscussionAgents/
 ### ユーザーインターフェース (`src/ui/`)
 - **`streamlit_app.py`**:
     - 基本的なUIが実装されている。
-    - 入力: トピック/URL、APIキー。
+    - 入力: トピック/URL、モデル選択。
     - 出力: グラフからのモック辞書出力を表示。
     - **状態**: モック化されたグラフに接続済み。
     - ✅ `request_id` を生成してstateに渡す（ログ追跡用）。
