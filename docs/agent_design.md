@@ -7,6 +7,28 @@
 
 ---
 
+## 0. オーケストレーションエージェント (OrchestrationAgent)
+
+### 0.1 役割と責任
+- **フェーズ**: フェーズ 0〜4（全体の司会/進行）
+- **目的**: 各エージェントの呼び出し順序・合流・早期終了（halt）・フォールバック方針を一箇所に集約する
+- **視点**: 生成ではなく運用/安定性重視（A案）
+
+### 0.2 入力・出力仕様
+#### `invoke(initial_state: DiscussionState) -> DiscussionState`
+- **状態**: ✅ **実装済み**（`src/core/orchestrator.py`）
+- **入力**:
+  - `topic: str`（URLまたはキーワード）
+  - `request_id: str`（任意）
+  - `messages: List[str]`（互換のため保持）
+- **出力**:
+  - `DiscussionState` 相当の辞書（UI/スモーク互換）
+  - `halt=True` の場合は `halt_reason` を付与して早期終了
+
+### 0.3 実装上の注意点（A案）
+- オーケストレーターは **「結論文の生成」は行わない**。各エージェントの出力を“素材として確定”し、`ReporterAgent` に渡して最終レポートを生成する。
+- 例外時も処理が空にならないよう、`Argument/Critique/Rebuttal/FinalReport` のフォールバックを用意して完走させる。
+
 ## 1. リサーチャーエージェント (ResearcherAgent)
 
 ### 1.1 役割と責任
@@ -285,13 +307,13 @@
 ### 5.4 実装上の注意点
 - 温度パラメータ: `temperature=0.5`（統合的な結論のため、中程度）
 - 構造化出力で `FinalReport` モデルに直接マッピング
-- 記事情報の抽出は、リサーチャーエージェントから取得したメタデータを活用
+- 記事情報の抽出は、`ResearcherAgent` が本文先頭へ付与するヘッダ（`[source]` / `[title]`）を優先して抽出して利用（無い場合はフォールバック）
 
 ---
 
-## 6. データモデルの拡張
+## 6. データモデル（現行）
 
-### 6.1 新規追加が必要なモデル
+### 6.1 実装済みモデル
 
 #### `Rebuttal` (フェーズ 3用)
 ```python
@@ -300,14 +322,8 @@ class Rebuttal(BaseModel):
     strengthened_evidence: List[str] = Field(description="自分の主張を補強する追加証拠")
 ```
 
-#### `ArticleMetadata` (リサーチャーエージェント用、オプション)
-```python
-class ArticleMetadata(BaseModel):
-    title: str
-    source: str
-    published_date: Optional[str]
-    url: Optional[str]
-```
+#### `ArticleMetadata`（将来の拡張・未実装）
+- 現行は `article_text` に `[source]` / `[title]` を付与する方式で運用しており、独立したメタデータ構造は未導入。
 
 ### 6.2 `DiscussionState` の更新
 ```python
@@ -328,23 +344,9 @@ class DiscussionState(TypedDict, total=False):
 
 ---
 
-## 7. 実装の優先順位
+## 7. 今後の改善候補（実装済み以外）
 
-### フェーズ 1: 基本機能の実装
-1. リサーチャーエージェント（Tavily統合）
-2. 楽観的・悲観的アナリスト（フェーズ 1のみ）
-3. ファクトチェッカー
-4. レポートエージェント（簡易版）
-
-### フェーズ 2: 討論機能の追加
-5. 反論機能（フェーズ 3）の実装
-6. `Rebuttal` モデルの追加と `DiscussionState` の更新
-7. グラフの更新（フェーズ 3のループ追加）
-
-### フェーズ 3: 品質向上
-8. エラーハンドリングの強化
-9. プロンプトの最適化
-10. メタデータの活用
+- 本番運用向け: UIの例外詳細表示のフラグ制御、DoS耐性の追加、DNS Rebinding/TOCTOU 対策の検討（`docs/implementation_status.md` の「次の作業」を参照）。
 
 ---
 
