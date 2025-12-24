@@ -16,7 +16,7 @@ LatestInformationDiscussionAgents/
 │   └── rss_feeds.txt
 ├── src/
 │   ├── agents/             # エージェントロジックの実装
-│   ├── core/               # オーケストレーションロジック (LangGraph)
+│   ├── core/               # オーケストレーションロジック（OrchestrationAgent）
 │   ├── models/             # データスキーマ (Pydantic)
 │   ├── ui/                 # ユーザーインターフェース (Streamlit)
 │   └── utils/              # ユーティリティ (LLM, ツール)
@@ -57,13 +57,13 @@ LatestInformationDiscussionAgents/
 - **`state.py`**:
     - `DiscussionState` (TypedDict) が定義され、主張、批評、最終レポートのフィールドを持つ。
     - ✅ `optimistic_rebuttal` と `pessimistic_rebuttal` フィールドを追加済み。
-    - ✅ `request_id` を追加（ログでUI→グラフ→各ノードの相関追跡に利用）。
+    - ✅ `request_id` を追加（ログでUI→オーケストレーション→各処理の相関追跡に利用）。
     - ✅ `halt` / `halt_reason` を追加（RSS一致なし等で早期終了するため）。
-- **`graph.py`**:
-    - `StateGraph` が定義され、Researcher -> Analysts -> Checker -> Reporter -> End と接続されている。
-    - ✅ フェーズ3（反論）ステップを追加し、`optimistic_rebuttal` / `pessimistic_rebuttal` を生成する。
+- **`orchestrator.py`**:
+    - `OrchestrationAgent` が定義され、Researcher -> Analysts -> Checker -> Rebuttals -> Reporter の順に実行する。
+    - ✅ フェーズ3（反論）ステップを含み、`optimistic_rebuttal` / `pessimistic_rebuttal` を生成する。
     - ✅ RSS一致なしの場合は `halt=True` で **早期終了**（後続フェーズを実行しない）。
-    - ✅ ログを `logging` に統一し、例外時もグラフが完走（フォールバックで継続）するようにしている。
+    - ✅ ログを `logging` に統一し、例外時も処理が完走（フォールバックで継続）するようにしている。
     - ✅ LLM設定を用途別プロファイルに集約（fact_checkは低温＋反復抑制）。
     - ✅ reporterへフェーズ0-3の出力を渡し、FinalReportを生成する（フェーズ4本実装）。
 
@@ -76,7 +76,7 @@ LatestInformationDiscussionAgents/
     - 基本的なUIが実装されている。
     - 入力: トピック/URL、モデル選択。
     - 出力: グラフからのモック辞書出力を表示。
-    - **状態**: モック化されたグラフに接続済み。
+    - **状態**: `OrchestrationAgent` に接続済み。
     - ✅ `request_id` を生成してstateに渡す（ログ追跡用）。
     - ✅ ログ初期化（UTF-8ファイルログ＋コンソール）を追加。
     - ✅ フェーズ3（反論）を表示。
@@ -103,10 +103,10 @@ LatestInformationDiscussionAgents/
 4.  ✅ **ファクトチェッカー実装**: フェーズ2用のLLMプロンプトと構造化出力（Critique型）を実装。**完了**
 5.  **討論ロジック**:
     - ✅ `DiscussionState` を更新し、反論データを保持できるようにする。**完了**
-    - ✅ `graph.py` を更新し、アナリストが批評に応答する「討論」ステップ (フェーズ 3) を含める。**完了**
+    - ✅ オーケストレーションに、アナリストが批評に応答する「討論」ステップ (フェーズ 3) を含める。**完了**
 6.  ✅ **RSS一致なし時の早期終了**: RSSフィードにキーワード一致が無い場合は理由を通知し、後続フェーズを実行せず終了する。**完了**
 7.  ✅ **フェーズ4（レポート）本実装**: 全フェーズの出力を統合し `FinalReport` を生成する。**完了**
-8.  **グラフの洗練**: ステップ間でデータが正しく渡されるようにする（例：記事をアナリストへ、主張をチェッカーへ、反論/批評をレポータへ）。**完了**
+8.  **オーケストレーションの洗練**: ステップ間でデータが正しく渡されるようにする（例：記事をアナリストへ、主張をチェッカーへ、反論/批評をレポータへ）。**完了**
 
 ## 4. 今後の変更方針（安全重視・外部検索APIなし）
 
@@ -156,7 +156,7 @@ LatestInformationDiscussionAgents/
 - ✅ **URL本文抽出の精度向上（readability）**
   - `readability-lxml` を導入し、可能ならreadabilityで本文抽出→失敗時は従来抽出へフォールバック。
 - ✅ **`get_llm()` のモデル事前確認をオプション化**
-  - `/api/tags` を毎回叩かないため、`get_llm(..., verify_model=...)` を追加。グラフ側は `verify_model=False` で軽量化。
+  - `/api/tags` を毎回叩かないため、`get_llm(..., verify_model=...)` を追加。オーケストレーション側は `verify_model=False` で軽量化。
 - ✅ **セキュリティ（SSRF/外部HTTP）対策**
   - `src/utils/security.py` を追加し、外部HTTPアクセスを共通化（URL検証、拒否IPレンジ、DNS解決、リダイレクト制御、サイズ上限）。
   - URL直入力 / RSSフィード取得 / RSS由来記事URL取得のすべてに適用。
