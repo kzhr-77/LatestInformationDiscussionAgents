@@ -8,7 +8,7 @@ load_dotenv()
 # Add src to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.core.graph import create_graph
+from src.core.orchestrator import OrchestrationAgent
 
 def main():
     topic = input("Enter a topic or URL to analyze: ")
@@ -18,9 +18,9 @@ def main():
 
     print("Initializing system...")
     try:
-        graph = create_graph()
+        orchestrator = OrchestrationAgent()
         print("Running analysis...")
-        result = graph.invoke({"topic": topic, "messages": []})
+        result = orchestrator.invoke({"topic": topic, "messages": []})
         
         print("\n=== Final Report ===")
         print(result.get("final_report"))

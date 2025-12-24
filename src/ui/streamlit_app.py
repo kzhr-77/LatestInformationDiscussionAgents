@@ -14,7 +14,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.core.graph import create_graph
+from src.core.orchestrator import OrchestrationAgent
 from src.utils.logging_config import setup_logging
 from src.utils.security import sanitize_url_for_logging
 
@@ -59,17 +59,17 @@ if st.button("分析開始"):
         st.info("分析を開始します...")
         
         try:
-            # グラフの作成
-            graph = create_graph(model_name)
+            # オーケストレーションの作成（LangGraphではなく専用Agentで進行）
+            orchestrator = OrchestrationAgent(model_name)
             
             # 初期状態の設定
             request_id = str(uuid.uuid4())
             initial_state = {"topic": topic, "messages": [], "request_id": request_id}
             logger.info("[%s] UI開始 topic=%s model=%s", request_id, sanitize_url_for_logging(topic), model_name)
             
-            # グラフの実行
+            # 実行
             with st.spinner("分析中..."):
-                result = graph.invoke(initial_state)
+                result = orchestrator.invoke(initial_state)
             
             st.success("分析完了！")
 

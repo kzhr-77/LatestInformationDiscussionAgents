@@ -15,12 +15,12 @@ def main() -> int:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from src.core.graph import create_graph
+    from src.core.orchestrator import OrchestrationAgent
     from src.utils.testing_models import AlwaysFailChatModel
 
     failing = AlwaysFailChatModel()
-    graph = create_graph(llm=failing, llm_fact_checker=failing, researcher_agent=DummyResearcherNoKeyword())
-    result = graph.invoke({"topic": "テスト", "messages": [], "request_id": "smoke-no-keyword"})
+    orchestrator = OrchestrationAgent(llm=failing, llm_fact_checker=failing, researcher_agent=DummyResearcherNoKeyword())
+    result = orchestrator.invoke({"topic": "テスト", "messages": [], "request_id": "smoke-no-keyword"})
 
     assert result.get("halt") is True
     assert "RSSフィード内にキーワード" in (result.get("halt_reason") or "")

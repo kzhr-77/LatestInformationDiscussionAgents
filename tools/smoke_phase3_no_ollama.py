@@ -7,15 +7,15 @@ def main() -> int:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from src.core.graph import create_graph
+    from src.core.orchestrator import OrchestrationAgent
     from src.utils.testing_models import AlwaysFailChatModel
 
     failing = AlwaysFailChatModel()
 
-    graph = create_graph(llm=failing, llm_fact_checker=failing)
+    orchestrator = OrchestrationAgent(llm=failing, llm_fact_checker=failing)
     # RSS設定が有効な環境ではキーワードがヒットせず早期終了(halt)する可能性があるため、
     # URL入力（失敗しても article_text="エラー: ..." で後続フェーズが完走する経路）でスモークする。
-    result = graph.invoke({"topic": "https://example.com", "messages": [], "request_id": "smoke"})
+    result = orchestrator.invoke({"topic": "https://example.com", "messages": [], "request_id": "smoke"})
 
     required_keys = [
         "optimistic_argument",
